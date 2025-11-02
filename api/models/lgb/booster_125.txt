@@ -1,0 +1,226 @@
+tree
+version=v4
+num_class=1
+num_tree_per_iteration=1
+label_index=0
+max_feature_idx=14
+objective=binary sigmoid:1
+feature_names=age edu_0 edu_1 day_cos day_sin AirConditioner_daytime AirConditioner_midnight ClothesWasher_daytime ClothesWasher_midnight Microwave_daytime RiceCooker_midnight TV_daytime IH_daytime day_sin_*_AirConditioner_daytime day_sin_*_Microwave_daytime
+feature_infos=[0.083333333333333481:0.95833333333333348] [0:1] [0:1] [-28280.49728486091:28158.011382825702] [-28240.434342187116:28033.352039361169] [0:18450] [144:24086] [37:521] [0:1047] [0:18911] [0:2661] [0:7577] [0:10200] [-124551977.94751395:353621843.7909174] [-488790396.75779819:514100376.8255586]
+tree_sizes=973 1051 1038 1454
+
+Tree=0
+num_leaves=9
+num_cat=0
+split_feature=0 7 14 4 12 8 5 0
+split_gain=7.25208 4.6512 3.42471 2.69157 2.99094 1.77619 2.66375 2.66169
+threshold=0.77083333333333359 40.500000000000007 -172931159.05186668 27998.894589326079 8486.0000000000018 63.000000000000007 391.50000000000006 0.31250000000000028
+decision_type=2 2 2 2 2 2 2 2
+left_child=1 -1 -2 4 5 6 -3 -8
+right_child=2 3 -4 -5 -6 -7 7 -9
+leaf_value=0.099913416312480963 -0.099826880130904003 -0.099942272261284534 0.09997113348997444 0.099826880130904003 0.099826880130904003 -0.099985566084729666 -0.099826880130903961 0.099913416312480949
+leaf_weight=0.49999999999999989 0.24999999999999989 0.74999999999999978 1.4999999999999998 0.24999999999999989 0.24999999999999989 3 0.25 0.5
+leaf_count=2 1 3 6 1 1 12 1 2
+internal_value=0 -0.045448 0.0714061 -0.0599924 -0.0684128 -0.0777688 -0.0333106 0.0332878
+internal_weight=0 5.5 1.75 5 4.75 4.5 1.5 0.75
+internal_count=29 22 7 20 19 18 6 3
+is_linear=0
+shrinkage=0.05
+
+
+Tree=1
+num_leaves=9
+num_cat=0
+split_feature=0 7 14 4 12 8 7 0
+split_gain=6.56178 4.20868 3.09898 2.43557 2.70649 1.60707 2.41039 2.40838
+threshold=0.77083333333333359 40.500000000000007 -172931159.05186668 27998.894589326079 8486.0000000000018 63.000000000000007 175.00000000000003 0.64583333333333359
+decision_type=2 2 2 2 2 2 2 2
+left_child=1 -1 -2 4 5 6 -3 -8
+right_child=2 3 -4 -5 -6 -7 7 -9
+leaf_value=0.095160296617468693 -0.095078766560112937 -0.095189225162191374 0.095214673312427028 0.095078766560112937 0.095078766560112937 -0.095228269158271373 0.095160296617468665 -0.095073548613310147
+leaf_weight=0.49875423312187184 0.24937818944454182 0.74813170731067635 1.4962584078311918 0.24937818944454182 0.24937818944454182 2.9925146698951721 0.49875423312187195 0.24937675893306732
+leaf_count=2 1 3 6 1 1 12 2 1
+internal_value=0 -0.0432848 0.0680074 -0.0571375 -0.0651577 -0.074069 -0.0317259 0.0317037
+internal_weight=0 5.48629 1.74564 4.98753 4.73816 4.48878 1.49626 0.748131
+internal_count=29 22 7 20 19 18 6 3
+is_linear=0
+shrinkage=0.05
+
+
+Tree=2
+num_leaves=9
+num_cat=0
+split_feature=0 7 14 8 12 8 5 0
+split_gain=5.96546 3.8264 2.8176 2.21443 2.46076 1.461 2.19139 2.18968
+threshold=0.77083333333333359 40.500000000000007 -172931159.05186668 902.50000000000011 8486.0000000000018 63.000000000000007 391.50000000000006 0.31250000000000028
+decision_type=2 2 2 2 2 2 2 2
+left_child=1 -1 -2 4 5 6 -3 -8
+right_child=2 3 -4 -5 -6 -7 7 -9
+leaf_value=0.091053746511934958 -0.09097575146726572 -0.091081272527130608 0.091105762438543902 0.09097575146726572 0.09097575146726572 -0.091118773712095882 -0.090971204516782991 0.09105374651193493
+leaf_weight=0.49527329206466664 0.2476406842470168 0.74290852248668648 1.4858036935329435 0.2476406842470168 0.2476406842470168 2.9715991616249084 0.2476380318403244 0.49527329206466675
+leaf_count=2 1 3 6 1 1 12 1 2
+internal_value=0 -0.0414159 0.0650713 -0.054671 -0.0623456 -0.0708728 -0.0303569 0.0303331
+internal_weight=0 5.44797 1.73344 4.9527 4.70506 4.45742 1.48582 0.742911
+internal_count=29 22 7 20 19 18 6 3
+is_linear=0
+shrinkage=0.05
+
+
+Tree=3
+num_leaves=13
+num_cat=0
+split_feature=0 9 5 7 10 5 3 0 5 0 0 1
+split_gain=5.43464 3.7048 5.00748 3.63279 3.00347 2.41151 1.62729 2.03564 0.0714565 0.120758 0.0626575 0.0183663
+threshold=0.31250000000000028 5448.5000000000009 6980.5000000000009 175.00000000000003 1807.5000000000002 71.000000000000014 -27623.189128929876 0.14583333333333351 391.50000000000006 0.64583333333333359 0.14583333333333351 1.0000000180025095e-35
+decision_type=2 2 2 2 2 2 2 2 2 2 2 2
+left_child=6 3 4 -2 8 -5 7 -1 9 -3 -8 -7
+right_child=1 2 -4 5 -6 11 10 -9 -10 -11 -12 -13
+leaf_value=-0.087380920509088536 -0.0875093172223287 0.1165147437805743 -0.087465756272997061 -0.087389769168388282 -0.087380920509088536 0.10531662269216407 -0.11637714441887384 0.11639078471736518 0.087539476604912417 0.087500721272999515 -0.087511433682904108 0.087470378553650655
+leaf_weight=0.24494506418704975 0.97978442907333352 0.73483519256115026 0.48989012837409962 0.24495325982570648 0.24494506418704975 0.24932213127613068 0.2449522018432615 0.24494506418704987 2.2045698314905167 0.73485375940799713 0.9797922819852829 0.48989869654178619
+leaf_count=1 4 3 2 1 1 1 1 1 9 3 4 2
+internal_value=0 0.0377574 0.0632015 -0.01935 0.0820445 0.048478 -0.0625142 0.0144486 0.0933502 0.102037 -0.0933212 0.0935479
+internal_weight=0 6.37305 4.40909 1.96396 3.9192 0.984174 1.71463 0.48989 3.67426 1.46969 1.22474 0.739221
+internal_count=33 26 18 8 16 4 7 2 15 6 5 3
+is_linear=0
+shrinkage=0.05
+
+
+end of trees
+
+feature_importances:
+age=10
+AirConditioner_daytime=5
+ClothesWasher_daytime=5
+ClothesWasher_midnight=4
+IH_daytime=3
+day_sin_*_Microwave_daytime=3
+day_sin=2
+edu_0=1
+day_cos=1
+Microwave_daytime=1
+RiceCooker_midnight=1
+
+parameters:
+[boosting: gbdt]
+[objective: binary]
+[metric: roc_auc]
+[tree_learner: serial]
+[device_type: cpu]
+[data_sample_strategy: bagging]
+[data: ]
+[valid: ]
+[num_iterations: 10000]
+[learning_rate: 0.05]
+[num_leaves: 30]
+[num_threads: 0]
+[seed: 0]
+[deterministic: 0]
+[force_col_wise: 0]
+[force_row_wise: 0]
+[histogram_pool_size: -1]
+[max_depth: -1]
+[min_data_in_leaf: 1]
+[min_sum_hessian_in_leaf: 0.001]
+[bagging_fraction: 0.72402]
+[pos_bagging_fraction: 1]
+[neg_bagging_fraction: 1]
+[bagging_freq: 3]
+[bagging_seed: 3]
+[feature_fraction: 0.832818]
+[feature_fraction_bynode: 1]
+[feature_fraction_seed: 2]
+[extra_trees: 0]
+[extra_seed: 6]
+[early_stopping_round: 0]
+[early_stopping_min_delta: 0]
+[first_metric_only: 0]
+[max_delta_step: 0]
+[lambda_l1: 0.000591589]
+[lambda_l2: 0.000137243]
+[linear_lambda: 0]
+[min_gain_to_split: 0]
+[drop_rate: 0.1]
+[max_drop: 50]
+[skip_drop: 0.5]
+[xgboost_dart_mode: 0]
+[uniform_drop: 0]
+[drop_seed: 4]
+[top_rate: 0.2]
+[other_rate: 0.1]
+[min_data_per_group: 100]
+[max_cat_threshold: 32]
+[cat_l2: 10]
+[cat_smooth: 10]
+[max_cat_to_onehot: 4]
+[top_k: 20]
+[monotone_constraints: ]
+[monotone_constraints_method: basic]
+[monotone_penalty: 0]
+[feature_contri: ]
+[forcedsplits_filename: ]
+[refit_decay_rate: 0.9]
+[cegb_tradeoff: 1]
+[cegb_penalty_split: 0]
+[cegb_penalty_feature_lazy: ]
+[cegb_penalty_feature_coupled: ]
+[path_smooth: 0]
+[interaction_constraints: ]
+[verbosity: -1]
+[saved_feature_importance_type: 0]
+[use_quantized_grad: 0]
+[num_grad_quant_bins: 4]
+[quant_train_renew_leaf: 0]
+[stochastic_rounding: 1]
+[linear_tree: 0]
+[max_bin: 255]
+[max_bin_by_feature: ]
+[min_data_in_bin: 3]
+[bin_construct_sample_cnt: 200000]
+[data_random_seed: 1]
+[is_enable_sparse: 1]
+[enable_bundle: 1]
+[use_missing: 1]
+[zero_as_missing: 0]
+[feature_pre_filter: 1]
+[pre_partition: 0]
+[two_round: 0]
+[header: 0]
+[label_column: ]
+[weight_column: ]
+[group_column: ]
+[ignore_column: ]
+[categorical_feature: ]
+[forcedbins_filename: ]
+[precise_float_parser: 0]
+[parser_config_file: ]
+[objective_seed: 5]
+[num_class: 1]
+[is_unbalance: 0]
+[scale_pos_weight: 1]
+[sigmoid: 1]
+[boost_from_average: 1]
+[reg_sqrt: 0]
+[alpha: 0.9]
+[fair_c: 1]
+[poisson_max_delta_step: 0.7]
+[tweedie_variance_power: 1.5]
+[lambdarank_truncation_level: 30]
+[lambdarank_norm: 1]
+[label_gain: ]
+[lambdarank_position_bias_regularization: 0]
+[eval_at: ]
+[multi_error_top_k: 1]
+[auc_mu_weights: ]
+[num_machines: 1]
+[local_listen_port: 12400]
+[time_out: 120]
+[machine_list_filename: ]
+[machines: ]
+[gpu_platform_id: -1]
+[gpu_device_id: -1]
+[gpu_use_dp: 0]
+[num_gpu: 1]
+
+end of parameters
+
+pandas_categorical:null

@@ -1,0 +1,14 @@
+services:
+  python:
+    build: .
+    volumes:
+      - .:/tmp
+    working_dir: /tmp
+    environment:
+      MCI_MYSQL_HOST: 'host.docker.internal'
+      MCI_MYSQL_USER: 'root'
+      MCI_MYSQL_PASSWORD: 'root'
+      MCI_MYSQL_DATABASE: 'test_mci'
+      API_SHARED_PASSWORD: 'password'
+      LOG_LEVEL: 'error'
+    command: bash -c 'python3 main2.py'
