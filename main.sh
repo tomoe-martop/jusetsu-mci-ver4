@@ -15,5 +15,5 @@ fi
 # docker container prune --force --filter "until=24h"
 # docker image prune -a --force --filter "until=24h"
 
-cd /opt/jusetsu-mci-ver3
+cd /opt/jusetsu-mci-ver4
 docker-compose run --rm python 2>&1

@@ -11,4 +11,4 @@ services:
       MCI_MYSQL_DATABASE: 'test_mci'
       API_SHARED_PASSWORD: 'password'
       LOG_LEVEL: 'error'
-    command: bash -c 'python3 main2.py'
+    command: bash -c 'python3 main.py'
