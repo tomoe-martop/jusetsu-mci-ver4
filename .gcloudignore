@@ -1,0 +1,41 @@
+# Git関連
+.git
+.gitignore
+
+# Python関連
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ログとデータ
+log/
+*.log
+predictor.log
+
+# データベースとマイグレーション
+db/
+data/
+
+# Docker関連（ローカル開発用）
+docker-compose.yml
+
+# その他
+README.md
+main.sh
+main2.py

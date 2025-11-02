@@ -1,7 +1,22 @@
-FROM python:3.8.19
-RUN pip install mysql-connector-python==8.0.33
-RUN pip install pandas==1.2.5
-RUN pip install requests==2.31.0
-RUN pip install optuna==3.1.1
-RUN pip install lightgbm==3.3.5
-RUN pip install numpy==1.20.0
+FROM python:3.8.19-slim
+
+# 作業ディレクトリを設定
+WORKDIR /app
+
+# システムの依存関係をインストール（LightGBMに必要）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# requirements.txtをコピーして依存関係をインストール
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# アプリケーションのソースコードをコピー
+COPY . .
+
+# /tmp/dataディレクトリを作成
+RUN mkdir -p /tmp/data
+
+# アプリケーションを実行
+CMD ["python", "main.py"]
