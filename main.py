@@ -329,6 +329,14 @@ def main():
 
             logger.debug(f"Completed task. task_id: %s", task_id)
 
+        # predictor.logをlogフォルダに移動を行う
+        predictor_log_path = os.path.join(base_dir, 'predictor.log')
+        if os.path.exists(predictor_log_path):
+            os.makedirs('log', exist_ok=True)
+            log_filename = f"{dt.now().strftime('%Y%m%d%H%M%S')}_predictor.log"
+            new_log_path = os.path.join(base_dir, 'log', log_filename)
+            os.rename(predictor_log_path, new_log_path)
+
         logger.info("Completed main.")
 
     except (Exception,) as e:
