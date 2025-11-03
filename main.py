@@ -2,6 +2,7 @@ import glob
 import os
 import logging
 import traceback
+import sys
 
 import mysql.connector
 import requests
@@ -13,6 +14,88 @@ import csv
 #import api.config as config
 import json
 
+# apiディレクトリをパスに追加
+base_dir = os.path.dirname(os.path.abspath(__file__))
+api_dir = os.path.join(base_dir, 'api')
+sys.path.insert(0, api_dir)
+
+# PredictorWithLoggingをインポート
+try:
+    from pred_mci import PredictorWithLogging
+except (TypeError, ModuleNotFoundError) as e:
+    # Python 3.8以前でtuple[...]型ヒントが使えない場合のエラーハンドリング
+    if isinstance(e, TypeError) and "'type' object is not subscriptable" in str(e):
+        import importlib.util
+        import re
+
+        api_path = os.path.join(api_dir, 'pred_mci.py')
+        if not os.path.exists(api_path):
+            raise FileNotFoundError(f"pred_mci.py not found: {api_path}")
+
+        with open(api_path, 'r', encoding='utf-8') as f:
+            source = f.read()
+
+        source_fixed = re.sub(r'->\s*tuple\[', '-> Tuple[', source)
+        source_fixed = re.sub(r':\s*tuple\[', ': Tuple[', source_fixed)
+
+        import os as _os
+        import pandas as _pd
+        import numpy as _np
+        import pickle as _pickle
+        import glob as _glob
+        import datetime as _datetime
+        import lightgbm as _lgb
+        import signal as _signal
+        from functools import wraps as _wraps
+        import time as _time
+        import logging as _logging
+        from logging.handlers import RotatingFileHandler as _RotatingFileHandler
+        from typing import Union, List, Dict, Callable, Any, Tuple as _Tuple
+
+        from myexception import InvalidInputError, PredictionError, PredictionTimeOut, UnexpectedError, TIMEOUT, timeout_handler
+
+        namespace = {
+            'os': _os, 'pd': _pd, 'np': _np, 'pickle': _pickle, 'glob': _glob,
+            'datetime': _datetime, 'lgb': _lgb, 'signal': _signal, 'wraps': _wraps,
+            'time': _time, 'logging': _logging, 'RotatingFileHandler': _RotatingFileHandler,
+            'Union': Union, 'List': List, 'Dict': Dict, 'Callable': Callable,
+            'Any': Any, 'Tuple': _Tuple,
+            'InvalidInputError': InvalidInputError, 'PredictionError': PredictionError,
+            'PredictionTimeOut': PredictionTimeOut, 'UnexpectedError': UnexpectedError,
+            'TIMEOUT': TIMEOUT, 'timeout_handler': timeout_handler,
+        }
+
+        compiled = compile(source_fixed, api_path, 'exec')
+        exec(compiled, namespace)
+
+        PredictorWithLogging = namespace['PredictorWithLogging']
+    else:
+        raise
+
+def get_status_message(status_code: int) -> str:
+    """
+    ステータスコードに対応するメッセージを取得
+
+    :param status_code: ステータスコード
+    :return: ステータスメッセージ
+    """
+    status_messages = {
+        100: "予測成功",
+        200: "CSVファイルが見つかりません",
+        201: "電力データフォーマットエラー",
+        202: "必要な電力データ量を満たしていません",
+        203: "電力データが空です",
+        211: "背景データフォーマットエラー",
+        300: "電力モデルが見つかりません",
+        301: "電力モデル読み込みエラー",
+        302: "電力モデル予測時のエラー",
+        310: "背景モデルが見つかりません",
+        311: "背景モデル読み込みエラー",
+        312: "背景モデル予測時のエラー",
+        400: "予測時のタイムアウト",
+        900: "予期せぬエラー"
+    }
+    return status_messages.get(status_code, "不明なステータスコード")
 
 def main():
     logger = logging.getLogger(__name__)
@@ -95,8 +178,8 @@ def main():
                         arr = []
 
                         # API取得
-                        start = dt.strptime(f"{date_from} 00:00:00+0900", '%Y/%m/%d %H:%M:%S%z')
-                        end = dt.strptime(f"{date_to} 00:00:00+0900", '%Y/%m/%d %H:%M:%S%z')
+                        start = dt.strptime(f"{date_from} 00:00:00+0900", '%Y-%m-%d %H:%M:%S%z')
+                        end = dt.strptime(f"{date_to} 00:00:00+0900", '%Y-%m-%d %H:%M:%S%z')
                         end = end + timedelta(days=1)
                         sub = end - start
                         exist_all = False
@@ -118,7 +201,7 @@ def main():
 
                             for i, timestamp in enumerate(timestamps):
                                 date_time_jst = dt.fromtimestamp(timestamp).astimezone(
-                                    timezone(timedelta(hours=+9))).strftime('%Y-%m-%d %H:%M:00')
+                                    timezone(timedelta(hours=+9))).strftime('%Y/%m/%d %H:%M')
                                 # print(date_time_jst)
                                 # print(appliance_types)
 
@@ -201,7 +284,7 @@ def main():
                         # 結果をDBに登録 (int)($float * 100.0 + 0.5);
                         sql = "INSERT `task_results` (task_id, task_house_id, result, created_at) " \
                               "value (%s, %s, %s, NOW())"
-                        param = (task_id, task_house_id, 100 - int(float(result) * 100.0 + 0.5),)
+                        param = (task_id, task_house_id, 100 - int(result))
                         cursor.execute(sql, param)
                         cnx.commit()
 
@@ -265,18 +348,19 @@ def update_task_houses(cnx, cursor, p_task_house_id, p_status, p_progress):
 
 
 def api_main(args):
+    logger = logging.getLogger(__name__)
     age = args.age
-    male = args.sex
-    edu = args.education
+    male = args.male
+    edu = args.edu
     solo = args.solo
-    csv_path = args.data_path
+    csv_path = args.csv
     debug = False
 
     try:
-        # Predictorインスタンスの作成
-        logger.info("Predictorクラスを初期化中...")
+        # PredictorWithLoggingインスタンスの作成
+        logger.info("PredictorWithLoggingクラスを初期化中...")
         # Docker環境対応: base_dirからの相対パスを使用
-        predictor = Predictor(
+        predictor = PredictorWithLogging(
             lgb_models_dir_path=os.path.join(base_dir, "api", "models", "lgb", "*.txt"),
             logi_models_dir_path=os.path.join(base_dir, "api", "models", "logistic", "*.pkl"),
             lgb_scaler_path=os.path.join(base_dir, "api", "scaler", "lgb_scaler.pickle"),
@@ -286,15 +370,19 @@ def api_main(args):
 
         # 予測実行
         logger.info("予測を実行中...")
+        logger.info(f"age: {age}, male: {male}, edu: {edu}, solo: {solo}, csv_path: {csv_path}")
         result = predictor.calculate_score(age, male, edu, solo, csv_path, debug=debug)
 
-        return result
+        status_code = result.get('status_code')
+        if status_code == 100:
+            return result.get('score')
+        else:
+            logger.error(f"エラーが発生しました。ステータスコード: {status_code}")
+            raise Exception(get_status_message(status_code))
     except Exception as e:
         logger.error(f"予測実行中にエラーが発生しました: {e}")
         logger.error(traceback.format_exc())
         raise
-#    return model.pred(age=args.age, male=args.male, edu=args.edu, df=df)
-
 
 class Args:
     def __init__(self, age, male, edu, solo, csv):
