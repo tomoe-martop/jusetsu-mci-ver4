@@ -39,3 +39,6 @@ docker-compose.yml
 README.md
 main.sh
 main2.py
+
+# モックAPIサーバー（別途デプロイされるため除外）
+mock_api_server/
