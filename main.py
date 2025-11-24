@@ -8,6 +8,7 @@ import mysql.connector
 import requests
 from datetime import datetime as dt, timedelta, timezone
 import csv
+from google.cloud import storage
 
 #from api.utils import preproc
 #from api.model import EmsembleModel
@@ -259,7 +260,8 @@ def main():
                             raise ValueError("Total loss error!")
 
                         ts = dt.timestamp(dt.now())
-                        data_path = f"/tmp/data/{start.strftime('%Y%m%d')}_{houseid}_{ts}.csv"  # input csv path
+                        csv_filename = f"{start.strftime('%Y%m%d')}_{houseid}_{int(ts)}.csv"
+                        data_path = f"/tmp/data/{csv_filename}"  # input csv path
                         # CSV出力
                         with open(data_path, 'w') as f:
                             writer = csv.writer(f)
@@ -268,6 +270,19 @@ def main():
 
                         if (len(arr) == 0) or (exist_all is False):
                             raise ValueError("Total loss error!")
+
+                        # CSVファイルをCloud Storageにバックアップ
+                        gcs_bucket_name = os.environ.get('GCS_LOG_BUCKET')
+                        if gcs_bucket_name:
+                            try:
+                                storage_client = storage.Client()
+                                bucket = storage_client.bucket(gcs_bucket_name)
+                                gcs_csv_path = f"data/{csv_filename}"
+                                blob = bucket.blob(gcs_csv_path)
+                                blob.upload_from_filename(data_path)
+                                logger.debug(f"CSV file uploaded to gs://{gcs_bucket_name}/{gcs_csv_path}")
+                            except Exception as e:
+                                logger.warning(f"Failed to upload CSV to GCS: {e}")
 
                         progress = 30
                         update_task_houses(cnx, cursor, task_house_id, status, progress)
@@ -329,14 +344,35 @@ def main():
 
             logger.debug(f"Completed task. task_id: %s", task_id)
 
-        # predictor.logをlogフォルダに移動を行う
+        # predictor.logをCloud Storageにアップロード
         predictor_log_path = os.path.join(base_dir, 'predictor.log')
         if os.path.exists(predictor_log_path):
-            os.makedirs('log', exist_ok=True)
-            # predictor_0000000001_yyyymmddhhmmss.log
-            log_filename = f"predictor_{str(task_id).zfill(10)}_{dt.now().strftime('%Y%m%d%H%M%S')}.log"
-            new_log_path = os.path.join(base_dir, 'log', log_filename)
-            os.rename(predictor_log_path, new_log_path)
+            try:
+                gcs_bucket_name = os.environ.get('GCS_LOG_BUCKET')
+                if gcs_bucket_name:
+                    # Cloud Storageにアップロード
+                    storage_client = storage.Client()
+                    bucket = storage_client.bucket(gcs_bucket_name)
+                    # predictor_0000000001_yyyymmddhhmmss.log
+                    log_filename = f"logs/predictor_{str(task_id).zfill(10)}_{dt.now().strftime('%Y%m%d%H%M%S')}.log"
+                    blob = bucket.blob(log_filename)
+                    blob.upload_from_filename(predictor_log_path)
+                    logger.info(f"Log file uploaded to gs://{gcs_bucket_name}/{log_filename}")
+                    # アップロード後、ローカルファイルを削除
+                    os.remove(predictor_log_path)
+                else:
+                    # GCS_LOG_BUCKETが設定されていない場合は、従来通りローカルに保存
+                    logger.warning("GCS_LOG_BUCKET is not set. Saving log locally.")
+                    os.makedirs('log', exist_ok=True)
+                    log_filename = f"predictor_{str(task_id).zfill(10)}_{dt.now().strftime('%Y%m%d%H%M%S')}.log"
+                    new_log_path = os.path.join(base_dir, 'log', log_filename)
+                    os.rename(predictor_log_path, new_log_path)
+            except Exception as e:
+                logger.warning(f"Failed to upload log to GCS: {e}. Saving locally.")
+                os.makedirs('log', exist_ok=True)
+                log_filename = f"predictor_{str(task_id).zfill(10)}_{dt.now().strftime('%Y%m%d%H%M%S')}.log"
+                new_log_path = os.path.join(base_dir, 'log', log_filename)
+                os.rename(predictor_log_path, new_log_path)
 
         logger.info("Completed main.")
 

@@ -60,6 +60,7 @@ cp .env.prd.example .env.prd
 - `MCI_MYSQL_TIMEZONE` - タイムゾーン（デフォルト: Asia/Tokyo）
 - `API_SHARED_PASSWORD` - Energy Gateway APIの共有パスワード
 - `LOG_LEVEL` - ログレベル（オプション、デフォルト: ERROR）
+- `GCS_LOG_BUCKET` - Cloud Storageのログ保存先バケット名（オプション、設定しない場合はローカル保存）
 
 **注意**: `.env.stg`と`.env.prd`ファイルは機密情報を含むため、Gitにコミットしないでください（`.gitignore`で除外済み）
 
@@ -83,6 +84,31 @@ CLOUD_SQL_INSTANCE=your-project-id:asia-northeast1:your-instance-name
 
 # 注意: MCI_MYSQL_HOSTは設定不要です（deploy.shが自動設定します）
 ```
+
+### 5. Cloud Storageへのログ・データ保存設定（推奨）
+
+ログファイルとCSVファイルをCloud Storageに保存する場合、以下の手順でバケットを作成してください：
+
+```bash
+# ログ・データ保存用バケットを作成
+gsutil mb -l asia-northeast1 gs://your-log-bucket-name
+
+# Cloud Run Jobs用のサービスアカウントに書き込み権限を付与
+gsutil iam ch serviceAccount:YOUR_PROJECT_NUMBER-compute@developer.gserviceaccount.com:objectCreator gs://your-log-bucket-name
+```
+
+`.env.stg`または`.env.prd`ファイルにバケット名を設定：
+
+```bash
+# .env.stg または .env.prd に以下を設定
+GCS_LOG_BUCKET=your-log-bucket-name
+```
+
+**バケット内のフォルダ構成**:
+- `logs/`: predictor.logファイル（実行ログ）
+- `data/`: 入力CSVファイル（電力データ）
+
+**注意**: `GCS_LOG_BUCKET`を設定しない場合、ファイルはコンテナ内のローカルフォルダに保存されますが、Cloud Run Jobsの終了時に削除されます。
 
 ## デプロイ手順
 
