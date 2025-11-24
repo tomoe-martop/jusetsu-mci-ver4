@@ -298,7 +298,13 @@ def main():
                         update_task_houses(cnx, cursor, task_house_id, status, progress)
 
                         # data_path = f"/tmp/data/sample.csv"
-                        args = Args(age, sex, education, solo, data_path)
+                        # MySQLから取得した値を明示的にint型に変換
+                        age_int = int(age) if age is not None else 0
+                        sex_int = int(sex) if sex is not None else 0
+                        edu_int = int(education) if education is not None else 0
+                        solo_int = int(solo) if solo is not None else 0
+
+                        args = Args(age_int, sex_int, edu_int, solo_int, data_path)
 
                         result = api_main(args)
                         logger.debug(f"api_main args: %s", json.dumps(vars(args)))
@@ -440,7 +446,7 @@ def api_main(args):
         raise
 
 class Args:
-    def __init__(self, age, male, edu, solo, csv):
+    def __init__(self, age, male, edu, solo, data_path):
         if male != 1:
             male = 0  # 女性は0
         if solo is None:
@@ -449,7 +455,7 @@ class Args:
         self.male = male
         self.edu = edu
         self.solo = solo
-        self.csv = csv
+        self.csv = data_path
 
 
 if __name__ == '__main__':
