@@ -106,7 +106,8 @@ def main():
     logger.info("Start main.")
 
     cnx = None
-    url = "https://api.energy-gateway.jp/0.2/estimated_data"
+    # モックAPIのURLを環境変数で指定可能
+    url = os.environ.get('ENERGY_GATEWAY_API_URL', "https://api.energy-gateway.jp/0.2/estimated_data")
     csv_header = ['date_time_jst', 'air_conditioner', 'clothes_washer', 'microwave', 'refrigerator', 'rice_cooker',
                   'TV', 'cleaner', 'IH', 'Heater']
     app_type_ids = [2, 5, 20, 24, 25, 30, 31, 37, 301]
