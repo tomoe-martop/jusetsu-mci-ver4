@@ -95,6 +95,15 @@ function convertCSVToAPIResponse(csvData, sts, ets) {
   // appliance_typesを作成
   const applianceTypes = [];
 
+  // デバッグ: 最初の行のキーを確認
+  if (filteredData.length > 0) {
+    console.log('First row keys:', Object.keys(filteredData[0]));
+    console.log('First row sample:', {
+      date_time_jst: filteredData[0].date_time_jst,
+      air_conditioner: filteredData[0].air_conditioner
+    });
+  }
+
   Object.entries(APPLIANCE_TYPE_MAP).forEach(([columnName, applianceTypeId]) => {
     const powers = filteredData.map(row => {
       const value = row[columnName];

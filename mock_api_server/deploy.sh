@@ -36,14 +36,20 @@ echo -e "${GREEN}✓ サービス名: $SERVICE_NAME${NC}"
 echo -e "${GREEN}✓ リージョン: $REGION${NC}"
 echo -e "${GREEN}✓ イメージ: $IMAGE_NAME${NC}\n"
 
-# ステップ1: Dockerイメージをビルドしてプッシュ
-echo -e "${YELLOW}ステップ1: Dockerイメージをビルドしています...${NC}"
-gcloud builds submit --tag $IMAGE_NAME
+# ステップ1: ローカルでDockerイメージをビルド
+echo -e "${YELLOW}ステップ1: Dockerイメージをローカルでビルドしています...${NC}"
+docker build --platform linux/amd64 -t $IMAGE_NAME .
 
 echo -e "${GREEN}✓ イメージのビルドが完了しました${NC}\n"
 
-# ステップ2: Cloud Runにデプロイ
-echo -e "${YELLOW}ステップ2: Cloud Runにデプロイしています...${NC}"
+# ステップ2: Container Registryにプッシュ
+echo -e "${YELLOW}ステップ2: Container Registryにプッシュしています...${NC}"
+docker push $IMAGE_NAME
+
+echo -e "${GREEN}✓ イメージのプッシュが完了しました${NC}\n"
+
+# ステップ3: Cloud Runにデプロイ
+echo -e "${YELLOW}ステップ3: Cloud Runにデプロイしています...${NC}"
 
 gcloud run deploy $SERVICE_NAME \
   --image $IMAGE_NAME \

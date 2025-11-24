@@ -12,6 +12,9 @@ RUN npm ci --only=production
 COPY server.js ./
 COPY test_api_data ./test_api_data/
 
+# タイムゾーンをJSTに設定（CSVデータのタイムスタンプがJSTのため）
+ENV TZ=Asia/Tokyo
+
 # ポートを公開（Cloud Runは環境変数PORTを使用）
 ENV PORT=8080
 EXPOSE 8080
