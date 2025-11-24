@@ -118,9 +118,7 @@ GCS_LOG_BUCKET=your-log-bucket-name
 ```bash
 cd bin
 ./deploy.sh
-# または明示的に
-export ENV=stg
-./deploy.sh
+# ENVを指定しない場合、デフォルトでstgになります
 ```
 
 **本番環境へのデプロイ** (ジョブ名: `prd-mci-ver4`):
@@ -128,6 +126,7 @@ export ENV=stg
 cd bin
 export ENV=prd
 ./deploy.sh
+# 本番環境は必ずENV=prdを指定してください
 ```
 
 ### 方法2: 手動デプロイ
