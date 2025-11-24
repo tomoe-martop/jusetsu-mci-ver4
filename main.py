@@ -396,21 +396,6 @@ class Args:
     def __init__(self, age, male, edu, solo, csv):
         if male != 1:
             male = 0  # 女性は0
-
-        if edu == '小卒':
-            edu = 6
-        elif edu == '中卒':
-            edu = 9
-        elif edu == '高卒':
-            edu = 12
-        elif edu == '大卒':
-            edu = 16
-        elif edu == '院卒（修士）':
-            edu = 17
-        elif edu == '院卒（博士）':
-            edu = 22
-        else:
-            edu = 10
         self.age = age
         self.male = male
         self.edu = edu
