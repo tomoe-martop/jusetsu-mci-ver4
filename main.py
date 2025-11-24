@@ -443,6 +443,8 @@ class Args:
     def __init__(self, age, male, edu, solo, csv):
         if male != 1:
             male = 0  # 女性は0
+        if solo is None:
+            solo = 0  # Noneの場合は0
         self.age = age
         self.male = male
         self.edu = edu
