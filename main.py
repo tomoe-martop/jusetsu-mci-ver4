@@ -333,7 +333,8 @@ def main():
         predictor_log_path = os.path.join(base_dir, 'predictor.log')
         if os.path.exists(predictor_log_path):
             os.makedirs('log', exist_ok=True)
-            log_filename = f"{dt.now().strftime('%Y%m%d%H%M%S')}_predictor.log"
+            # predictor_0000000001_yyyymmddhhmmss.log
+            log_filename = f"predictor_{str(task_id).zfill(10)}_{dt.now().strftime('%Y%m%d%H%M%S')}.log"
             new_log_path = os.path.join(base_dir, 'log', log_filename)
             os.rename(predictor_log_path, new_log_path)
 
