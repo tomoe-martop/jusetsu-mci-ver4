@@ -85,6 +85,31 @@ CLOUD_SQL_INSTANCE=your-project-id:asia-northeast1:your-instance-name
 # 注意: MCI_MYSQL_HOSTは設定不要です（deploy.shが自動設定します）
 ```
 
+**Cloud SQLユーザーの権限設定**:
+
+アプリケーションが必要とするテーブル操作を行うために、MySQLユーザーに適切な権限を付与してください：
+
+```bash
+# Cloud SQLに接続
+gcloud sql connect INSTANCE_NAME --user=root --database=dashboard_db
+```
+
+MySQLコンソールで以下を実行：
+
+```sql
+-- Cloud SQL Proxy経由のユーザーを作成（まだ作成していない場合）
+CREATE USER 'app_user'@'cloudsqlproxy~%' IDENTIFIED BY 'your-password';
+
+-- 必要な権限を付与
+GRANT SELECT ON dashboard_db.* TO 'app_user'@'cloudsqlproxy~%';
+GRANT UPDATE ON dashboard_db.tasks TO 'app_user'@'cloudsqlproxy~%';
+GRANT UPDATE ON dashboard_db.task_houses TO 'app_user'@'cloudsqlproxy~%';
+GRANT INSERT ON dashboard_db.task_results TO 'app_user'@'cloudsqlproxy~%';
+FLUSH PRIVILEGES;
+```
+
+**注意**: 本番環境（prd）でも同様の権限設定が必要です。
+
 ### 5. Cloud Storageへのログ・データ保存設定（推奨）
 
 ログファイルとCSVファイルをCloud Storageに保存する場合、以下の手順でバケットを作成してください：

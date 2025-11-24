@@ -53,6 +53,11 @@ else
     echo -e "${YELLOW}⚠ .env.$ENV ファイルが見つかりません。環境変数で設定されているか確認します${NC}"
 fi
 
+# オプション環境変数の設定（Cloud SQL確認のため先に取得）
+MCI_MYSQL_TIMEZONE="${MCI_MYSQL_TIMEZONE:-Asia/Tokyo}"
+LOG_LEVEL="${LOG_LEVEL:-ERROR}"
+USE_CLOUD_SQL="${USE_CLOUD_SQL:-false}"
+
 # 環境変数の確認
 echo -e "${YELLOW}環境変数の設定を確認しています...${NC}"
 
@@ -60,10 +65,14 @@ echo -e "${YELLOW}環境変数の設定を確認しています...${NC}"
 REQUIRED_VARS=(
     "MCI_MYSQL_USER"
     "MCI_MYSQL_PASSWORD"
-    "MCI_MYSQL_HOST"
     "MCI_MYSQL_DATABASE"
     "API_SHARED_PASSWORD"
 )
+
+# Cloud SQLを使わない場合のみMCI_MYSQL_HOSTが必須
+if [ "$USE_CLOUD_SQL" != "true" ]; then
+    REQUIRED_VARS+=("MCI_MYSQL_HOST")
+fi
 
 MISSING_VARS=()
 
@@ -82,7 +91,9 @@ if [ ${#MISSING_VARS[@]} -gt 0 ]; then
     echo "環境変数を設定してから再実行してください："
     echo "  export MCI_MYSQL_USER='your-user'"
     echo "  export MCI_MYSQL_PASSWORD='your-password'"
-    echo "  export MCI_MYSQL_HOST='your-host'"
+    if [ "$USE_CLOUD_SQL" != "true" ]; then
+        echo "  export MCI_MYSQL_HOST='your-host'"
+    fi
     echo "  export MCI_MYSQL_DATABASE='your-database'"
     echo "  export API_SHARED_PASSWORD='your-api-password'"
     exit 1
@@ -90,12 +101,7 @@ fi
 
 echo -e "${GREEN}✓ 必須環境変数が設定されています${NC}\n"
 
-# オプション環境変数の設定
-MCI_MYSQL_TIMEZONE="${MCI_MYSQL_TIMEZONE:-Asia/Tokyo}"
-LOG_LEVEL="${LOG_LEVEL:-ERROR}"
-
-# Cloud SQL使用の確認
-USE_CLOUD_SQL="${USE_CLOUD_SQL:-false}"
+# Cloud SQL接続名の確認
 CLOUD_SQL_INSTANCE="${CLOUD_SQL_INSTANCE:-}"
 
 if [ "$USE_CLOUD_SQL" = "true" ] && [ -z "$CLOUD_SQL_INSTANCE" ]; then
@@ -119,7 +125,13 @@ echo -e "${GREEN}✓ イメージのビルドが完了しました${NC}\n"
 echo -e "${YELLOW}ステップ2: Cloud Run Jobsにデプロイしています...${NC}"
 
 # 環境変数の構築
-ENV_VARS="MCI_MYSQL_USER=$MCI_MYSQL_USER,MCI_MYSQL_PASSWORD=$MCI_MYSQL_PASSWORD,MCI_MYSQL_DATABASE=$MCI_MYSQL_DATABASE,MCI_MYSQL_TIMEZONE=$MCI_MYSQL_TIMEZONE,API_SHARED_PASSWORD=$API_SHARED_PASSWORD,LOG_LEVEL=$LOG_LEVEL"
+# Cloud SQL使用時はMCI_MYSQL_HOSTを自動設定
+if [ "$USE_CLOUD_SQL" = "true" ]; then
+    echo -e "${GREEN}✓ Cloud SQL接続を有効化します: $CLOUD_SQL_INSTANCE${NC}"
+    MCI_MYSQL_HOST="/cloudsql/$CLOUD_SQL_INSTANCE"
+fi
+
+ENV_VARS="MCI_MYSQL_USER=$MCI_MYSQL_USER,MCI_MYSQL_PASSWORD=$MCI_MYSQL_PASSWORD,MCI_MYSQL_HOST=$MCI_MYSQL_HOST,MCI_MYSQL_DATABASE=$MCI_MYSQL_DATABASE,MCI_MYSQL_TIMEZONE=$MCI_MYSQL_TIMEZONE,API_SHARED_PASSWORD=$API_SHARED_PASSWORD,LOG_LEVEL=$LOG_LEVEL"
 
 # GCS_LOG_BUCKETが設定されている場合は追加
 if [ -n "$GCS_LOG_BUCKET" ]; then
@@ -131,18 +143,13 @@ fi
 DEPLOY_CMD="gcloud run jobs deploy $JOB_NAME \
   --image $IMAGE_NAME \
   --region $REGION \
-  --max-instances 1 \
+  --parallelism 1 \
   --set-env-vars \"$ENV_VARS\""
 
-# Cloud SQL使用時の追加オプション
+# Cloud SQL使用時は接続オプションを追加
 if [ "$USE_CLOUD_SQL" = "true" ]; then
-    echo -e "${GREEN}✓ Cloud SQL接続を有効化します: $CLOUD_SQL_INSTANCE${NC}"
     DEPLOY_CMD="$DEPLOY_CMD \
-  --set-cloudsql-instances \"$CLOUD_SQL_INSTANCE\" \
-  --update-env-vars \"MCI_MYSQL_HOST=/cloudsql/$CLOUD_SQL_INSTANCE\""
-else
-    DEPLOY_CMD="$DEPLOY_CMD \
-  --update-env-vars \"MCI_MYSQL_HOST=$MCI_MYSQL_HOST\""
+  --set-cloudsql-instances \"$CLOUD_SQL_INSTANCE\""
 fi
 
 # デプロイ実行

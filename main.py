@@ -112,13 +112,23 @@ def main():
     app_type_ids = [2, 5, 20, 24, 25, 30, 31, 37, 301]
 
     try:
-        cnx = mysql.connector.connect(
-            user=os.environ.get('MCI_MYSQL_USER'),
-            password=os.environ.get('MCI_MYSQL_PASSWORD'),
-            host=os.environ.get('MCI_MYSQL_HOST'),
-            database=os.environ.get('MCI_MYSQL_DATABASE'),
-            time_zone=os.environ.get('MCI_MYSQL_TIMEZONE', "Asia/Tokyo"),
-        )
+        # Cloud SQL Proxy uses Unix socket, otherwise use host
+        mysql_host = os.environ.get('MCI_MYSQL_HOST')
+        connection_params = {
+            'user': os.environ.get('MCI_MYSQL_USER'),
+            'password': os.environ.get('MCI_MYSQL_PASSWORD'),
+            'database': os.environ.get('MCI_MYSQL_DATABASE'),
+            'time_zone': os.environ.get('MCI_MYSQL_TIMEZONE', "Asia/Tokyo"),
+        }
+
+        if mysql_host and mysql_host.startswith('/cloudsql/'):
+            # Use unix_socket for Cloud SQL Proxy
+            connection_params['unix_socket'] = mysql_host
+        else:
+            # Use host for direct connection
+            connection_params['host'] = mysql_host
+
+        cnx = mysql.connector.connect(**connection_params)
 
         if cnx.is_connected:
             logger.debug("Connected Mysql!")
