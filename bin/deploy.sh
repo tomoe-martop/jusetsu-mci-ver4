@@ -30,13 +30,28 @@ fi
 echo -e "${GREEN}✓ プロジェクトID: $PROJECT_ID${NC}"
 
 # 変数設定
-JOB_NAME="jusetsu-mci"
+# 環境に応じてジョブ名を設定（デフォルト: stg-mci-ver4）
+# 本番環境の場合: export ENV=prd を設定してから実行
+ENV="${ENV:-stg}"
+JOB_NAME="${ENV}-mci-ver4"
 REGION="asia-northeast1"
 IMAGE_NAME="gcr.io/$PROJECT_ID/$JOB_NAME"
 
+echo -e "${GREEN}✓ 環境: $ENV${NC}"
 echo -e "${GREEN}✓ ジョブ名: $JOB_NAME${NC}"
 echo -e "${GREEN}✓ リージョン: $REGION${NC}"
 echo -e "${GREEN}✓ イメージ: $IMAGE_NAME${NC}\n"
+
+# .envファイルの読み込み
+ENV_FILE="$PROJECT_ROOT/.env.$ENV"
+if [ -f "$ENV_FILE" ]; then
+    echo -e "${GREEN}✓ .env.$ENV ファイルを読み込みます${NC}"
+    set -a
+    source "$ENV_FILE"
+    set +a
+else
+    echo -e "${YELLOW}⚠ .env.$ENV ファイルが見つかりません。環境変数で設定されているか確認します${NC}"
+fi
 
 # 環境変数の確認
 echo -e "${YELLOW}環境変数の設定を確認しています...${NC}"

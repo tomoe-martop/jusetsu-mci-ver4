@@ -34,8 +34,25 @@ gcloud services enable artifactregistry.googleapis.com
 
 ### 3. 環境変数の準備
 
-以下の環境変数を設定する必要があります：
+環境変数は`.env`ファイルで管理することを推奨します。
 
+**ステージング環境の設定**:
+```bash
+# テンプレートをコピー
+cp .env.stg.example .env.stg
+
+# エディタで .env.stg を編集して実際の値を設定
+```
+
+**本番環境の設定**:
+```bash
+# テンプレートをコピー
+cp .env.prd.example .env.prd
+
+# エディタで .env.prd を編集して実際の値を設定
+```
+
+**必要な環境変数**:
 - `MCI_MYSQL_USER` - MySQLユーザー名
 - `MCI_MYSQL_PASSWORD` - MySQLパスワード
 - `MCI_MYSQL_HOST` - MySQLホスト（Cloud SQL接続文字列など）
@@ -44,23 +61,46 @@ gcloud services enable artifactregistry.googleapis.com
 - `API_SHARED_PASSWORD` - Energy Gateway APIの共有パスワード
 - `LOG_LEVEL` - ログレベル（オプション、デフォルト: ERROR）
 
-### 4. Cloud SQLへの接続設定（推奨）
+**注意**: `.env.stg`と`.env.prd`ファイルは機密情報を含むため、Gitにコミットしないでください（`.gitignore`で除外済み）
 
-Cloud SQLを使用する場合：
+### 4. Cloud SQLへの接続設定
+
+Cloud SQLを使用する場合、以下の手順で接続情報を取得してください：
 
 ```bash
 # Cloud SQL接続名を取得
 gcloud sql instances describe INSTANCE_NAME --format="value(connectionName)"
 
-# 接続名の例: project-id:region:instance-name
+# 接続名の例: your-project-id:asia-northeast1:your-instance-name
+```
+
+取得した接続名を`.env.stg`または`.env.prd`ファイルに設定：
+
+```bash
+# .env.stg または .env.prd に以下を設定
+USE_CLOUD_SQL=true
+CLOUD_SQL_INSTANCE=your-project-id:asia-northeast1:your-instance-name
+
+# 注意: MCI_MYSQL_HOSTは設定不要です（deploy.shが自動設定します）
 ```
 
 ## デプロイ手順
 
 ### 方法1: 自動デプロイスクリプトを使用（推奨）
 
+**ステージング環境へのデプロイ** (ジョブ名: `stg-mci-ver4`):
 ```bash
 cd bin
+./deploy.sh
+# または明示的に
+export ENV=stg
+./deploy.sh
+```
+
+**本番環境へのデプロイ** (ジョブ名: `prd-mci-ver4`):
+```bash
+cd bin
+export ENV=prd
 ./deploy.sh
 ```
 
@@ -100,41 +140,78 @@ gcloud run jobs deploy jusetsu-mci \
 
 ### 手動実行
 
+**ステージング環境**:
 ```bash
-gcloud run jobs execute jusetsu-mci --region asia-northeast1
+gcloud run jobs execute stg-mci-ver4 --region asia-northeast1
+```
+
+**本番環境**:
+```bash
+gcloud run jobs execute prd-mci-ver4 --region asia-northeast1
 ```
 
 ### 定期実行の設定（Cloud Scheduler使用）
 
+**ステージング環境** (毎分実行の例):
 ```bash
-# Cloud Schedulerジョブを作成（毎分実行の例）
-gcloud scheduler jobs create http jusetsu-mci-scheduler \
-  --location asia-northeast1 \
-  --schedule "* * * * *" \
-  --uri "https://asia-northeast1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT_ID/jobs/jusetsu-mci:run" \
-  --http-method POST \
-  --oauth-service-account-email $PROJECT_NUMBER-compute@developer.gserviceaccount.com
-
 # プロジェクト番号を取得
 export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
+
+# Cloud Schedulerジョブを作成
+gcloud scheduler jobs create http stg-mci-ver4-scheduler \
+  --location asia-northeast1 \
+  --schedule "* * * * *" \
+  --uri "https://asia-northeast1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT_ID/jobs/stg-mci-ver4:run" \
+  --http-method POST \
+  --oauth-service-account-email $PROJECT_NUMBER-compute@developer.gserviceaccount.com
+```
+
+**本番環境** (毎分実行の例):
+```bash
+# プロジェクト番号を取得
+export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
+
+# Cloud Schedulerジョブを作成
+gcloud scheduler jobs create http prd-mci-ver4-scheduler \
+  --location asia-northeast1 \
+  --schedule "* * * * *" \
+  --uri "https://asia-northeast1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT_ID/jobs/prd-mci-ver4:run" \
+  --http-method POST \
+  --oauth-service-account-email $PROJECT_NUMBER-compute@developer.gserviceaccount.com
 ```
 
 ## ジョブの監視
 
 ### ジョブの実行状況を確認
 
+**ステージング環境**:
 ```bash
-gcloud run jobs executions list --job jusetsu-mci --region asia-northeast1
+gcloud run jobs executions list --job stg-mci-ver4 --region asia-northeast1
+```
+
+**本番環境**:
+```bash
+gcloud run jobs executions list --job prd-mci-ver4 --region asia-northeast1
 ```
 
 ### ログの確認
 
+**ステージング環境**:
 ```bash
 # 最新のログを表示
-gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=jusetsu-mci" --limit 50 --format json
+gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=stg-mci-ver4" --limit 50 --format json
 
 # リアルタイムでログを表示
-gcloud alpha logging tail "resource.type=cloud_run_job AND resource.labels.job_name=jusetsu-mci"
+gcloud logging tail "resource.type=cloud_run_job AND resource.labels.job_name=stg-mci-ver4"
+```
+
+**本番環境**:
+```bash
+# 最新のログを表示
+gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=prd-mci-ver4" --limit 50 --format json
+
+# リアルタイムでログを表示
+gcloud logging tail "resource.type=cloud_run_job AND resource.labels.job_name=prd-mci-ver4"
 ```
 
 ## 更新
@@ -152,19 +229,19 @@ cd bin
 
 ### ジョブが失敗する場合
 
-1. ログを確認
+1. ログを確認（例: ステージング環境）
 ```bash
-gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=jusetsu-mci AND severity>=ERROR" --limit 10
+gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=stg-mci-ver4 AND severity>=ERROR" --limit 10
 ```
 
-2. 環境変数が正しく設定されているか確認
+2. 環境変数が正しく設定されているか確認（例: ステージング環境）
 ```bash
-gcloud run jobs describe jusetsu-mci --region asia-northeast1 --format="value(spec.template.spec.containers[0].env)"
+gcloud run jobs describe stg-mci-ver4 --region asia-northeast1 --format="value(spec.template.spec.containers[0].env)"
 ```
 
-3. Cloud SQL接続の確認（Cloud SQL使用時）
+3. Cloud SQL接続の確認（Cloud SQL使用時、例: ステージング環境）
 ```bash
-gcloud run jobs describe jusetsu-mci --region asia-northeast1 --format="value(spec.template.spec.containers[0].cloudSqlInstances)"
+gcloud run jobs describe stg-mci-ver4 --region asia-northeast1 --format="value(spec.template.spec.containers[0].cloudSqlInstances)"
 ```
 
 ### 二重起動の防止

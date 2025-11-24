@@ -32,3 +32,5 @@ ENV/
 .env
 .env.local
 .env.*.local
+.env.stg
+.env.prd
