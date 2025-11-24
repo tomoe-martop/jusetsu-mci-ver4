@@ -1,21 +1,21 @@
 # jusetsu-mci-ver4
 
-## main2.pyの使用方法
+## main.pyの使用方法
 
-`main2.py`は新しいMCI予測API（`api/pred_mci`）を使用して予測を実行するスクリプトです。
+`main.py`は新しいMCI予測API（`api/pred_mci`）を使用して予測を実行するスクリプトです。
 
 ### 通常モード（DBからタスク取得→API取得→予測→DB保存）
 
 DBから未処理のタスクを取得し、APIから電力データを取得して予測を実行し、結果をDBに保存します。
 
 ```
-$ docker-compose run --rm python python3 main2.py
+$ docker-compose run --rm python python3 main.py
 ```
 
 または、ローカルで直接実行する場合：
 
 ```
-$ python3 main2.py
+$ python3 main.py
 ```
 
 ### CSVファイルから直接予測（API取得をスキップ）
@@ -25,7 +25,7 @@ APIが接続できない環境や、既存のCSVファイルから直接予測�
 #### 基本的な使用方法
 
 ```bash
-$ python3 main2.py --csv api/csv/test_data.csv --age 70 --male 0 --edu 12 --solo 1
+$ python3 main.py --csv api/csv/test_data.csv --age 70 --male 0 --edu 12 --solo 1
 ```
 
 #### 引数オプション
@@ -43,12 +43,12 @@ $ python3 main2.py --csv api/csv/test_data.csv --age 70 --male 0 --edu 12 --solo
 
 **デバッグモードで実行:**
 ```bash
-$ python3 main2.py --csv api/csv/test_data.csv --age 75 --male 1 --edu 10 --solo 0 --debug
+$ python3 main.py --csv api/csv/test_data.csv --age 75 --male 1 --edu 10 --solo 0 --debug
 ```
 
 **Docker環境で実行:**
 ```bash
-$ docker-compose run --rm python python3 main2.py --csv api/csv/test_data.csv --age 70 --male 0 --edu 12 --solo 1
+$ docker-compose run --rm python python3 main.py --csv api/csv/test_data.csv --age 70 --male 0 --edu 12 --solo 1
 ```
 
 ## ログファイルの確認方法
