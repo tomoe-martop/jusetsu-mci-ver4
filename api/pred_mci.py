@@ -426,6 +426,13 @@ class Predictor:
                 }
             )
         else:
+            # y_pred_probaがthreshold=0.467上の場合の対応
+            if 0.47 > y_pred_proba > 0.467:
+                y_pred_proba = 0.470
+            elif 0.467 >= y_pred_proba >= 0.46:
+                y_pred_proba = 0.460
+            else:
+                pass
             return self._return_result(100, int(y_pred_proba * 100))
 
 
