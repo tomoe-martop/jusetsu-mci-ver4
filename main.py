@@ -205,11 +205,13 @@ def main():
                                       'ets': int(ets.timestamp()), 'time_units': 20}
                             # print(headers, params)
 
-                            res = requests.get(url, headers=headers, params=params)
+                            res = requests.get(url, headers=headers, params=params, timeout=30)
+                            res.raise_for_status()  # HTTPエラーの場合に例外を発生
                             # print(r.json()['data'][0]['timestamps'])
 
-                            timestamps = res.json()['data'][0]['timestamps']
-                            appliance_types = res.json()['data'][0]['appliance_types']
+                            response_data = res.json()
+                            timestamps = response_data['data'][0]['timestamps']
+                            appliance_types = response_data['data'][0]['appliance_types']
 
                             for i, timestamp in enumerate(timestamps):
                                 date_time_jst = dt.fromtimestamp(timestamp).astimezone(

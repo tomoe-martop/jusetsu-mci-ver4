@@ -139,6 +139,12 @@ if [ -n "$GCS_LOG_BUCKET" ]; then
     echo -e "${GREEN}✓ Cloud Storage ログ保存先: gs://$GCS_LOG_BUCKET/logs/${NC}"
 fi
 
+# ENERGY_GATEWAY_API_URLが設定されている場合は追加
+if [ -n "$ENERGY_GATEWAY_API_URL" ]; then
+    ENV_VARS="$ENV_VARS,ENERGY_GATEWAY_API_URL=$ENERGY_GATEWAY_API_URL"
+    echo -e "${GREEN}✓ Energy Gateway API URL: $ENERGY_GATEWAY_API_URL${NC}"
+fi
+
 # デプロイコマンドの構築
 DEPLOY_CMD="gcloud run jobs deploy $JOB_NAME \
   --image $IMAGE_NAME \
