@@ -7,6 +7,39 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// DB接続設定（環境変数から取得）
+let dbPool = null;
+const useDatabase = process.env.USE_DATABASE === 'true';
+
+if (useDatabase) {
+  const mysql = require('mysql2/promise');
+  const mysqlHost = process.env.MCI_MYSQL_HOST || '127.0.0.1';
+
+  // Cloud SQLソケットパスの場合（/cloudsql/...）
+  const poolConfig = {
+    user: process.env.MCI_MYSQL_USER,
+    password: process.env.MCI_MYSQL_PASSWORD,
+    database: process.env.MCI_MYSQL_DATABASE,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0
+  };
+
+  if (mysqlHost.startsWith('/cloudsql/')) {
+    poolConfig.socketPath = mysqlHost;
+    console.log(`Database mode enabled (Cloud SQL socket: ${mysqlHost})`);
+  } else {
+    poolConfig.host = mysqlHost;
+    poolConfig.port = process.env.MCI_MYSQL_PORT || 3306;
+    console.log(`Database mode enabled (TCP: ${mysqlHost})`);
+  }
+
+  dbPool = mysql.createPool(poolConfig);
+}
+
+// CSVデータのメモリキャッシュ（CSV使用時のみ）
+const csvCache = new Map();
+
 // 家電タイプIDのマッピング
 const APPLIANCE_TYPE_MAP = {
   'air_conditioner': 2,
@@ -20,7 +53,51 @@ const APPLIANCE_TYPE_MAP = {
   'Heater': 301
 };
 
-// CSVファイルからデータを読み込む
+// DBからデータを取得
+async function getDataFromDB(houseId, sts, ets) {
+  const [rows] = await dbPool.execute(
+    `SELECT timestamp, air_conditioner, clothes_washer, microwave, refrigerator,
+            rice_cooker, TV, cleaner, IH, Heater
+     FROM mock_energy_data
+     WHERE house_id = ? AND timestamp >= ? AND timestamp < ?
+     ORDER BY timestamp`,
+    [houseId, sts, ets]
+  );
+  return rows;
+}
+
+// DBデータをAPIレスポンス形式に変換
+function convertDBToAPIResponse(dbRows) {
+  if (dbRows.length === 0) {
+    return {
+      data: [{
+        timestamps: [],
+        appliance_types: []
+      }]
+    };
+  }
+
+  const timestamps = dbRows.map(row => row.timestamp);
+  const applianceTypes = [];
+
+  Object.entries(APPLIANCE_TYPE_MAP).forEach(([columnName, applianceTypeId]) => {
+    const powers = dbRows.map(row => row[columnName]);
+    applianceTypes.push({
+      appliance_type_id: applianceTypeId,
+      appliances: [{ powers }]
+    });
+  });
+
+  return {
+    data: [{
+      timestamps,
+      appliance_types: applianceTypes
+    }]
+  };
+}
+
+// === CSV関連の関数（フォールバック用） ===
+
 function readCSVFile(filePath) {
   return new Promise((resolve, reject) => {
     const results = [];
@@ -32,49 +109,42 @@ function readCSVFile(filePath) {
   });
 }
 
-// ハウスIDからファイル番号を抽出（2025080001 → 001）
 function getFileNumberFromHouseId(houseId) {
-  // 2025080001〜2025080095 → 末尾4桁から番号を抽出
   const match = houseId.match(/^202508(\d{4})$/);
   if (match) {
-    // 0001 → 001, 0095 → 095
     return parseInt(match[1], 10).toString().padStart(3, '0');
   }
   return null;
 }
 
-// test_api_dataディレクトリからハウスIDに対応するCSVファイルを探す
 function findCSVFileByHouseId(houseId) {
   const fileNumber = getFileNumberFromHouseId(houseId);
-  if (!fileNumber) {
-    return null;
-  }
+  if (!fileNumber) return null;
 
   const testDataDir = path.join(__dirname, 'test_api_data');
+  if (!fs.existsSync(testDataDir)) return null;
 
-  // test_api_dataディレクトリのすべてのファイルを検索
   const files = fs.readdirSync(testDataDir);
-
-  // _XXX.csvのパターンにマッチするファイルを探す
   const pattern = new RegExp(`_${fileNumber}\\.csv$`);
   const matchedFile = files.find(file => pattern.test(file));
 
-  if (matchedFile) {
-    return path.join(testDataDir, matchedFile);
-  }
-
-  return null;
+  return matchedFile ? path.join(testDataDir, matchedFile) : null;
 }
 
-// 日時文字列をUnix timestampに変換
+async function getCachedCSVData(filePath) {
+  if (csvCache.has(filePath)) {
+    return csvCache.get(filePath);
+  }
+  const data = await readCSVFile(filePath);
+  csvCache.set(filePath, data);
+  return data;
+}
+
 function dateTimeToTimestamp(dateTimeStr) {
-  // "2024/06/14 00:00" → Unix timestamp
   return moment(dateTimeStr, 'YYYY/MM/DD HH:mm').unix();
 }
 
-// CSVデータをAPIのJSON形式に変換
 function convertCSVToAPIResponse(csvData, sts, ets) {
-  // 期間でフィルタリング
   const filteredData = csvData.filter(row => {
     if (!row.date_time_jst) return false;
     const timestamp = dateTimeToTimestamp(row.date_time_jst);
@@ -90,83 +160,75 @@ function convertCSVToAPIResponse(csvData, sts, ets) {
     };
   }
 
-  // timestampsを作成
   const timestamps = filteredData.map(row => dateTimeToTimestamp(row.date_time_jst));
-
-  // appliance_typesを作成
   const applianceTypes = [];
-
-  // デバッグ: 最初の行のキーを確認
-  if (filteredData.length > 0) {
-    console.log('First row keys:', Object.keys(filteredData[0]));
-    console.log('First row sample:', {
-      date_time_jst: filteredData[0].date_time_jst,
-      air_conditioner: filteredData[0].air_conditioner
-    });
-  }
 
   Object.entries(APPLIANCE_TYPE_MAP).forEach(([columnName, applianceTypeId]) => {
     const powers = filteredData.map(row => {
       const value = row[columnName];
-      // 空欄やnullの場合はnull、それ以外は数値に変換
-      if (!value || value === '') {
-        return null;
-      }
+      if (!value || value === '') return null;
       return parseFloat(value);
     });
 
     applianceTypes.push({
       appliance_type_id: applianceTypeId,
-      appliances: [
-        {
-          powers: powers
-        }
-      ]
+      appliances: [{ powers }]
     });
   });
 
   return {
-    data: [
-      {
-        timestamps: timestamps,
-        appliance_types: applianceTypes
-      }
-    ]
+    data: [{
+      timestamps,
+      appliance_types: applianceTypes
+    }]
   };
 }
 
-// APIエンドポイント
+// === APIエンドポイント ===
+
 app.get('/0.2/estimated_data', async (req, res) => {
   try {
     const { service_provider, house, sts, ets, time_units } = req.query;
+    const startTime = Date.now();
 
     console.log(`Request: spid=${service_provider}, house=${house}, sts=${sts}, ets=${ets}, time_units=${time_units}`);
 
-    // パラメータバリデーション
     if (!service_provider || !house || !sts || !ets) {
       return res.status(400).json({ error: 'Missing required parameters' });
     }
 
-    // spidが9991でない場合はエラー
     if (service_provider !== '9991') {
       return res.status(404).json({ error: 'Service provider not found' });
     }
 
-    // ハウスIDに対応するCSVファイルを検索
-    const csvFilePath = findCSVFileByHouseId(house);
-    if (!csvFilePath) {
-      return res.status(404).json({ error: `CSV file not found for house: ${house}` });
+    let response;
+
+    // DBモードの場合
+    if (useDatabase && dbPool) {
+      console.log('Using database...');
+      const dbRows = await getDataFromDB(house, parseInt(sts), parseInt(ets));
+
+      if (dbRows.length === 0) {
+        return res.status(404).json({ error: `No data found for house: ${house}` });
+      }
+
+      response = convertDBToAPIResponse(dbRows);
+    }
+    // CSVフォールバック
+    else {
+      console.log('Using CSV files...');
+      const csvFilePath = findCSVFileByHouseId(house);
+      if (!csvFilePath) {
+        return res.status(404).json({ error: `CSV file not found for house: ${house}` });
+      }
+
+      console.log(`Found CSV file: ${csvFilePath}`);
+      const csvData = await getCachedCSVData(csvFilePath);
+      response = convertCSVToAPIResponse(csvData, parseInt(sts), parseInt(ets));
     }
 
-    console.log(`Found CSV file: ${csvFilePath}`);
-
-    // CSVファイルを読み込む
-    const csvData = await readCSVFile(csvFilePath);
-
-    // APIレスポンス形式に変換
-    const response = convertCSVToAPIResponse(csvData, parseInt(sts), parseInt(ets));
-
-    console.log(`Returning ${response.data[0].timestamps.length} data points`);
+    const elapsed = Date.now() - startTime;
+    console.log(`Returning ${response.data[0].timestamps.length} data points in ${elapsed}ms`);
 
     res.json(response);
 
@@ -177,12 +239,26 @@ app.get('/0.2/estimated_data', async (req, res) => {
 });
 
 // ヘルスチェック
-app.get('/health', (req, res) => {
-res.json({ status: 'ok' });
+app.get('/health', async (req, res) => {
+  const status = { status: 'ok', mode: useDatabase ? 'database' : 'csv' };
+
+  if (useDatabase && dbPool) {
+    try {
+      await dbPool.execute('SELECT 1');
+      status.database = 'connected';
+    } catch (err) {
+      status.database = 'disconnected';
+      status.error = err.message;
+    }
+  }
+
+  res.json(status);
 });
 
+// サーバー起動
 app.listen(PORT, () => {
   console.log(`Mock API server running on http://localhost:${PORT}`);
+  console.log(`Mode: ${useDatabase ? 'Database' : 'CSV files'}`);
   console.log(`Endpoint: http://localhost:${PORT}/0.2/estimated_data`);
   console.log(`Example: http://localhost:${PORT}/0.2/estimated_data?service_provider=9991&house=2025080001&sts=1718294400&ets=1718380800&time_units=20`);
 });

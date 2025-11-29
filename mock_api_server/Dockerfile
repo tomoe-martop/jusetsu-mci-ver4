@@ -8,9 +8,8 @@ COPY package*.json ./
 # 依存関係をインストール
 RUN npm ci --only=production
 
-# アプリケーションのソースをコピー
+# アプリケーションのソースをコピー（DBモードではCSVは不要）
 COPY server.js ./
-COPY test_api_data ./test_api_data/
 
 # タイムゾーンをJSTに設定（CSVデータのタイムスタンプがJSTのため）
 ENV TZ=Asia/Tokyo

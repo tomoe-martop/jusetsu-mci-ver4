@@ -48,6 +48,24 @@ docker push $IMAGE_NAME
 
 echo -e "${GREEN}✓ イメージのプッシュが完了しました${NC}\n"
 
+# .env.stgから環境変数を読み込み
+ENV_FILE="$(dirname "$SCRIPT_DIR")/.env.stg"
+if [ -f "$ENV_FILE" ]; then
+    echo -e "${GREEN}✓ .env.stgを読み込みます${NC}"
+    set -a
+    source "$ENV_FILE"
+    set +a
+else
+    echo -e "${YELLOW}⚠ .env.stgが見つかりません${NC}"
+fi
+
+# Cloud SQL接続設定
+CLOUD_SQL_INSTANCE="${CLOUD_SQL_INSTANCE:-}"
+if [ -z "$CLOUD_SQL_INSTANCE" ]; then
+    echo "エラー: CLOUD_SQL_INSTANCEが設定されていません"
+    exit 1
+fi
+
 # ステップ3: Cloud Runにデプロイ
 echo -e "${YELLOW}ステップ3: Cloud Runにデプロイしています...${NC}"
 
@@ -60,7 +78,9 @@ gcloud run deploy $SERVICE_NAME \
   --cpu 1 \
   --max-instances 10 \
   --min-instances 0 \
-  --port 8080
+  --port 8080 \
+  --set-cloudsql-instances "$CLOUD_SQL_INSTANCE" \
+  --set-env-vars "USE_DATABASE=true,MCI_MYSQL_HOST=/cloudsql/$CLOUD_SQL_INSTANCE,MCI_MYSQL_USER=$MCI_MYSQL_USER,MCI_MYSQL_PASSWORD=$MCI_MYSQL_PASSWORD,MCI_MYSQL_DATABASE=$MCI_MYSQL_DATABASE"
 
 echo -e "${GREEN}✓ デプロイが完了しました${NC}\n"
 
