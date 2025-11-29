@@ -9,6 +9,7 @@ import requests
 from datetime import datetime as dt, timedelta, timezone
 import csv
 from google.cloud import storage
+from google.cloud import run_v2
 
 #from api.utils import preproc
 #from api.model import EmsembleModel
@@ -98,12 +99,51 @@ def get_status_message(status_code: int) -> str:
     }
     return status_messages.get(status_code, "不明なステータスコード")
 
+def is_another_execution_running():
+    """他に実行中のCloud Run Job実行があるかチェック"""
+    project_id = os.environ.get('GOOGLE_CLOUD_PROJECT')
+    location = os.environ.get('CLOUD_RUN_REGION', 'asia-northeast1')
+    job_name = os.environ.get('CLOUD_RUN_JOB')
+    current_execution = os.environ.get('CLOUD_RUN_EXECUTION')
+
+    # 必要な環境変数が設定されていない場合（ローカル実行など）はチェックをスキップ
+    if not all([project_id, job_name, current_execution]):
+        return False
+
+    try:
+        client = run_v2.ExecutionsClient()
+        parent = f"projects/{project_id}/locations/{location}/jobs/{job_name}"
+
+        for execution in client.list_executions(parent=parent):
+            # 自分自身はスキップ
+            if current_execution in execution.name:
+                continue
+
+            # 実行中かどうかチェック（reconciling=準備中も含む）
+            if execution.reconciling or (
+                execution.running_count > 0 and
+                execution.succeeded_count == 0 and
+                execution.failed_count == 0
+            ):
+                return True
+
+        return False
+    except Exception as e:
+        # APIエラーの場合は警告を出して継続（安全側に倒す）
+        logging.warning(f"実行中チェックでエラーが発生しました: {e}")
+        return False
+
 def main():
     logger = logging.getLogger(__name__)
     LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
     logging.basicConfig(level=LOG_LEVEL, format='%(asctime)s %(levelname)s %(message)s')
 
     logger.info("Start main.")
+
+    # 他のジョブ実行が実行中かチェック
+    if is_another_execution_running():
+        logger.info("別のCloud Run Jobが実行中のため、このジョブをスキップします")
+        sys.exit(0)
 
     cnx = None
     # モックAPIのURLを環境変数で指定可能
