@@ -164,6 +164,7 @@ def main():
         sys.exit(0)
 
     cnx = None
+    should_upload_log = False  # タスク処理が行われた場合のみログをアップロード
     # API URL
     api_url = os.environ.get('ENERGY_GATEWAY_API_URL', "https://api.energy-gateway.jp/0.2/estimated_data")
     # モックAPI URL（spid=9991の場合のみ使用）
@@ -219,6 +220,7 @@ def main():
             logger.warning("Warning Occurred. failed old csv files: exception: %s", e)
 
         for (task_id, date_from, date_to) in tasks:
+            should_upload_log = True  # タスク処理開始
             try:
                 # タスク毎
                 logger.debug("Start task. task_id: %s", task_id)
@@ -265,7 +267,7 @@ def main():
                                       'ets': int(ets.timestamp()), 'time_units': 20}
 
                             # spid=9991かつMOCK_API_URLが定義されている場合はモックサーバーを使用
-                            if spid == 9991 and mock_api_url:
+                            if str(spid) == '9991' and mock_api_url:
                                 url = mock_api_url
                             else:
                                 url = api_url
@@ -429,34 +431,7 @@ def main():
             logger.debug(f"Completed task. task_id: %s", task_id)
 
         # predictor.logをCloud Storageにアップロード
-        predictor_log_path = os.path.join(base_dir, 'predictor.log')
-        if os.path.exists(predictor_log_path):
-            try:
-                gcs_bucket_name = os.environ.get('GCS_LOG_BUCKET')
-                if gcs_bucket_name:
-                    # Cloud Storageにアップロード
-                    storage_client = storage.Client()
-                    bucket = storage_client.bucket(gcs_bucket_name)
-                    # predictor_0000000001_yyyymmddhhmmss.log
-                    log_filename = f"logs/predictor_{str(task_id).zfill(10)}_{dt.now().strftime('%Y%m%d%H%M%S')}.log"
-                    blob = bucket.blob(log_filename)
-                    blob.upload_from_filename(predictor_log_path)
-                    logger.info(f"Log file uploaded to gs://{gcs_bucket_name}/{log_filename}")
-                    # アップロード後、ローカルファイルを削除
-                    os.remove(predictor_log_path)
-                else:
-                    # GCS_LOG_BUCKETが設定されていない場合は、従来通りローカルに保存
-                    logger.warning("GCS_LOG_BUCKET is not set. Saving log locally.")
-                    os.makedirs('log', exist_ok=True)
-                    log_filename = f"predictor_{str(task_id).zfill(10)}_{dt.now().strftime('%Y%m%d%H%M%S')}.log"
-                    new_log_path = os.path.join(base_dir, 'log', log_filename)
-                    os.rename(predictor_log_path, new_log_path)
-            except Exception as e:
-                logger.warning(f"Failed to upload log to GCS: {e}. Saving locally.")
-                os.makedirs('log', exist_ok=True)
-                log_filename = f"predictor_{str(task_id).zfill(10)}_{dt.now().strftime('%Y%m%d%H%M%S')}.log"
-                new_log_path = os.path.join(base_dir, 'log', log_filename)
-                os.rename(predictor_log_path, new_log_path)
+        upload_log_to_gcs(task_id)
 
         logger.info("Completed main.")
 
@@ -464,6 +439,9 @@ def main():
         logger.error("Error Occurred. exception: %s", e)
         exit(1)
     finally:
+        # タスク処理が行われた場合のみログをアップロード
+        if should_upload_log:
+            upload_log_to_gcs()
         if cnx is not None and cnx.is_connected():
             cnx.close()
             logger.debug("Closed Mysql!")
@@ -474,6 +452,59 @@ def update_task_houses(cnx, cursor, p_task_house_id, p_status, p_progress):
     m_param = (p_status, p_progress, p_task_house_id,)
     cursor.execute(m_sql, m_param)
     cnx.commit()
+
+
+def upload_log_to_gcs(task_id=None):
+    """predictor.logをCloud Storageにアップロード（エラー時も実行）"""
+    logger = logging.getLogger(__name__)
+
+    # pred_mci.pyはカレントディレクトリにログを作成するため、両方の場所を確認
+    possible_paths = [
+        os.path.join(base_dir, 'predictor.log'),  # base_dir
+        'predictor.log',  # カレントディレクトリ
+        os.path.join(os.getcwd(), 'predictor.log'),  # カレントディレクトリ（絶対パス）
+    ]
+
+    predictor_log_path = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            predictor_log_path = path
+            break
+
+    if not predictor_log_path:
+        return
+
+    try:
+        gcs_bucket_name = os.environ.get('GCS_LOG_BUCKET')
+        task_id_str = str(task_id).zfill(10) if task_id else 'unknown'
+
+        if gcs_bucket_name:
+            # Cloud Storageにアップロード
+            storage_client = storage.Client()
+            bucket = storage_client.bucket(gcs_bucket_name)
+            log_filename = f"logs/predictor_{task_id_str}_{dt.now().strftime('%Y%m%d%H%M%S')}.log"
+            blob = bucket.blob(log_filename)
+            blob.upload_from_filename(predictor_log_path)
+            logger.info(f"Log file uploaded to gs://{gcs_bucket_name}/{log_filename}")
+            # アップロード後、ローカルファイルを削除
+            os.remove(predictor_log_path)
+        else:
+            # GCS_LOG_BUCKETが設定されていない場合は、従来通りローカルに保存
+            logger.warning("GCS_LOG_BUCKET is not set. Saving log locally.")
+            os.makedirs('log', exist_ok=True)
+            log_filename = f"predictor_{task_id_str}_{dt.now().strftime('%Y%m%d%H%M%S')}.log"
+            new_log_path = os.path.join(base_dir, 'log', log_filename)
+            os.rename(predictor_log_path, new_log_path)
+    except Exception as e:
+        logger.warning(f"Failed to upload log to GCS: {e}. Saving locally.")
+        try:
+            os.makedirs('log', exist_ok=True)
+            task_id_str = str(task_id).zfill(10) if task_id else 'unknown'
+            log_filename = f"predictor_{task_id_str}_{dt.now().strftime('%Y%m%d%H%M%S')}.log"
+            new_log_path = os.path.join(base_dir, 'log', log_filename)
+            os.rename(predictor_log_path, new_log_path)
+        except Exception:
+            pass
 
 
 def api_main(args):
