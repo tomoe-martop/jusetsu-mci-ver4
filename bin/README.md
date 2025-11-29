@@ -61,6 +61,11 @@ cp .env.prd.example .env.prd
 - `API_SHARED_PASSWORD` - Energy Gateway APIの共有パスワード
 - `LOG_LEVEL` - ログレベル（オプション、デフォルト: ERROR）
 - `GCS_LOG_BUCKET` - Cloud Storageのログ保存先バケット名（オプション、設定しない場合はローカル保存）
+- `ENERGY_GATEWAY_API_URL` - Energy Gateway APIのURL（オプション、デフォルト: https://api.energy-gateway.jp/0.2/estimated_data）
+- `MOCK_API_URL` - モックAPIのURL（オプション、spid=9991の場合のみ使用）
+
+**自動設定される環境変数**（deploy.shが自動的に設定）:
+- `GOOGLE_CLOUD_PROJECT` - GCPプロジェクトID（多重実行防止のチェックに使用）
 
 **注意**: `.env.stg`と`.env.prd`ファイルは機密情報を含むため、Gitにコミットしないでください（`.gitignore`で除外済み）
 

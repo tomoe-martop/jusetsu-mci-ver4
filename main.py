@@ -119,22 +119,30 @@ def get_status_message(status_code: int) -> str:
 
 def is_another_execution_running():
     """他に実行中のCloud Run Job実行があるかチェック"""
+    logger = logging.getLogger(__name__)
     project_id = os.environ.get('GOOGLE_CLOUD_PROJECT')
     location = os.environ.get('CLOUD_RUN_REGION', 'asia-northeast1')
     job_name = os.environ.get('CLOUD_RUN_JOB')
     current_execution = os.environ.get('CLOUD_RUN_EXECUTION')
 
+    logger.debug(f"実行中チェック: project_id={project_id}, location={location}, job_name={job_name}, current_execution={current_execution}")
+
     # 必要な環境変数が設定されていない場合（ローカル実行など）はチェックをスキップ
     if not all([project_id, job_name, current_execution]):
+        logger.warning(f"実行中チェックをスキップ: 環境変数が不足 (project_id={project_id}, job_name={job_name}, current_execution={current_execution})")
         return False
 
     try:
         client = run_v2.ExecutionsClient()
         parent = f"projects/{project_id}/locations/{location}/jobs/{job_name}"
+        logger.debug(f"実行一覧を取得中: parent={parent}")
 
         for execution in client.list_executions(parent=parent):
+            logger.debug(f"実行を確認: name={execution.name}, reconciling={execution.reconciling}, running={execution.running_count}, succeeded={execution.succeeded_count}, failed={execution.failed_count}")
+
             # 自分自身はスキップ
             if current_execution in execution.name:
+                logger.debug(f"自分自身をスキップ: {execution.name}")
                 continue
 
             # 実行中かどうかチェック（reconciling=準備中も含む）
@@ -143,12 +151,14 @@ def is_another_execution_running():
                 execution.succeeded_count == 0 and
                 execution.failed_count == 0
             ):
+                logger.info(f"他に実行中のジョブを検出: {execution.name}")
                 return True
 
+        logger.debug("他に実行中のジョブなし")
         return False
     except Exception as e:
         # APIエラーの場合は警告を出して継続（安全側に倒す）
-        logging.warning(f"実行中チェックでエラーが発生しました: {e}")
+        logger.warning(f"実行中チェックでエラーが発生しました: {e}")
         return False
 
 def main():
