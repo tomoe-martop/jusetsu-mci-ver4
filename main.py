@@ -164,8 +164,10 @@ def main():
         sys.exit(0)
 
     cnx = None
-    # モックAPIのURLを環境変数で指定可能
-    url = os.environ.get('ENERGY_GATEWAY_API_URL', "https://api.energy-gateway.jp/0.2/estimated_data")
+    # API URL
+    api_url = os.environ.get('ENERGY_GATEWAY_API_URL', "https://api.energy-gateway.jp/0.2/estimated_data")
+    # モックAPI URL（spid=9991の場合のみ使用）
+    mock_api_url = os.environ.get('MOCK_API_URL')
     csv_header = ['date_time_jst', 'air_conditioner', 'clothes_washer', 'microwave', 'refrigerator', 'rice_cooker',
                   'TV', 'cleaner', 'IH', 'Heater']
     app_type_ids = [2, 5, 20, 24, 25, 30, 31, 37, 301]
@@ -261,7 +263,12 @@ def main():
                             headers = {'Authorization': f"imSP {spid}:{os.environ.get('API_SHARED_PASSWORD')}"}
                             params = {'service_provider': spid, 'house': houseid, 'sts': int(sts.timestamp()),
                                       'ets': int(ets.timestamp()), 'time_units': 20}
-                            # print(headers, params)
+
+                            # spid=9991かつMOCK_API_URLが定義されている場合はモックサーバーを使用
+                            if spid == 9991 and mock_api_url:
+                                url = mock_api_url
+                            else:
+                                url = api_url
 
                             res = requests.get(url, headers=headers, params=params, timeout=30)
                             res.raise_for_status()  # HTTPエラーの場合に例外を発生
