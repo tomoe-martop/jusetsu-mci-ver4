@@ -74,6 +74,24 @@ except (TypeError, ModuleNotFoundError) as e:
     else:
         raise
 
+# PredictorWithLoggingインスタンスをグローバルで1度だけ初期化
+_predictor_instance = None
+
+def get_predictor():
+    """PredictorWithLoggingのシングルトンインスタンスを取得"""
+    global _predictor_instance
+    if _predictor_instance is None:
+        logger = logging.getLogger(__name__)
+        logger.info("PredictorWithLoggingクラスを初期化中...")
+        _predictor_instance = PredictorWithLogging(
+            lgb_models_dir_path=os.path.join(base_dir, "api", "models", "lgb", "*.txt"),
+            logi_models_dir_path=os.path.join(base_dir, "api", "models", "logistic", "*.pkl"),
+            lgb_scaler_path=os.path.join(base_dir, "api", "scaler", "lgb_scaler.pickle"),
+            logi_scaler_path=os.path.join(base_dir, "api", "scaler", "logi_scaler.pickle")
+        )
+        logger.info("初期化完了")
+    return _predictor_instance
+
 def get_status_message(status_code: int) -> str:
     """
     ステータスコードに対応するメッセージを取得
@@ -461,16 +479,8 @@ def api_main(args):
     debug = False
 
     try:
-        # PredictorWithLoggingインスタンスの作成
-        logger.info("PredictorWithLoggingクラスを初期化中...")
-        # Docker環境対応: base_dirからの相対パスを使用
-        predictor = PredictorWithLogging(
-            lgb_models_dir_path=os.path.join(base_dir, "api", "models", "lgb", "*.txt"),
-            logi_models_dir_path=os.path.join(base_dir, "api", "models", "logistic", "*.pkl"),
-            lgb_scaler_path=os.path.join(base_dir, "api", "scaler", "lgb_scaler.pickle"),
-            logi_scaler_path=os.path.join(base_dir, "api", "scaler", "logi_scaler.pickle")
-        )
-        logger.info("初期化完了")
+        # シングルトンインスタンスを取得（初回のみ初期化される）
+        predictor = get_predictor()
 
         # 予測実行
         logger.info("予測を実行中...")

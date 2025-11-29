@@ -14,7 +14,7 @@ ERROR_CODE_DICT = {
     400: "PredictionTimeOut",
     900: "UnexpectedError",
 }
-TIMEOUT = 1
+TIMEOUT = 30
 
 # Define a timeout handler for signal
 def timeout_handler(signum, frame):
