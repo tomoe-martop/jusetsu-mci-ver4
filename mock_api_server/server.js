@@ -32,12 +32,13 @@ function readCSVFile(filePath) {
   });
 }
 
-// ハウスIDからファイル番号を抽出（DUMMY00001 → 001）
+// ハウスIDからファイル番号を抽出（2025080001 → 001）
 function getFileNumberFromHouseId(houseId) {
-  const match = houseId.match(/DUMMY0*(\d+)/);
+  // 2025080001〜2025080095 → 末尾4桁から番号を抽出
+  const match = houseId.match(/^202508(\d{4})$/);
   if (match) {
-    // 先頭の0を除去してから3桁にパディング
-    return match[1].padStart(3, '0');
+    // 0001 → 001, 0095 → 095
+    return parseInt(match[1], 10).toString().padStart(3, '0');
   }
   return null;
 }
@@ -177,11 +178,11 @@ app.get('/0.2/estimated_data', async (req, res) => {
 
 // ヘルスチェック
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok' });
+res.json({ status: 'ok' });
 });
 
 app.listen(PORT, () => {
   console.log(`Mock API server running on http://localhost:${PORT}`);
   console.log(`Endpoint: http://localhost:${PORT}/0.2/estimated_data`);
-  console.log(`Example: http://localhost:${PORT}/0.2/estimated_data?service_provider=9991&house=DUMMY00001&sts=1718294400&ets=1718380800&time_units=20`);
+  console.log(`Example: http://localhost:${PORT}/0.2/estimated_data?service_provider=9991&house=2025080001&sts=1718294400&ets=1718380800&time_units=20`);
 });

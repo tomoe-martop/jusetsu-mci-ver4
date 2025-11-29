@@ -39,7 +39,7 @@ GET http://localhost:3000/0.2/estimated_data
 | パラメータ | 必須 | 説明 | 例 |
 |-----------|------|------|-----|
 | service_provider | ✓ | サービスプロバイダID（9991固定） | 9991 |
-| house | ✓ | ハウスID | DUMMY00001 |
+| house | ✓ | ハウスID | 2025080001 |
 | sts | ✓ | 開始日時（Unix timestamp） | 1718294400 |
 | ets | ✓ | 終了日時（Unix timestamp） | 1718380800 |
 | time_units | - | 時間単位 | 20 |
@@ -48,19 +48,19 @@ GET http://localhost:3000/0.2/estimated_data
 
 | ハウスID | CSVファイル | 説明 |
 |---------|------------|------|
-| DUMMY00001 | 202508_001.csv | 2025年8月のデータ（001） |
-| DUMMY00002 | 202508_002.csv | 2025年8月のデータ（002） |
-| DUMMY00025 | 202508_025.csv | 2025年8月のデータ（025） |
+| 2025080001 | 202508_001.csv | 2025年8月のデータ（001） |
+| 2025080002 | 202508_002.csv | 2025年8月のデータ（002） |
+| 2025080095 | 202508_095.csv | 2025年8月のデータ（095） |
 
 ファイル名の規則: `YYYYMM_XXX.csv`
-- YYYYMM: 年月（stsから自動判定）
-- XXX: ハウスIDから抽出（DUMMY00001 → 001）
+- YYYYMM: 年月
+- XXX: ハウスIDから抽出（2025080001 → 001）
 
 ### リクエスト例
 
 ```bash
 # 2024年6月14日 00:00:00 ～ 2024年6月15日 00:00:00 のデータを取得
-curl "http://localhost:3000/0.2/estimated_data?service_provider=9991&house=DUMMY00001&sts=1718294400&ets=1718380800&time_units=20"
+curl "http://localhost:3000/0.2/estimated_data?service_provider=9991&house=2025080001&sts=1718294400&ets=1718380800&time_units=20"
 ```
 
 ### Pythonからの使用例
@@ -77,7 +77,7 @@ ets = int(datetime(2024, 6, 15, 0, 0, 0).timestamp())
 
 params = {
     'service_provider': 9991,
-    'house': 'DUMMY00001',
+    'house': '2025080001',
     'sts': sts,
     'ets': ets,
     'time_units': 20
@@ -192,7 +192,7 @@ URL: https://mock-api-stg-xxxxx-an.a.run.app
 
 ```bash
 # デプロイ後のURLを使用
-curl "https://mock-api-stg-xxxxx-an.a.run.app/0.2/estimated_data?service_provider=9991&house=DUMMY00001&sts=1718336280&ets=1718336400&time_units=20"
+curl "https://mock-api-stg-xxxxx-an.a.run.app/0.2/estimated_data?service_provider=9991&house=2025080001&sts=1718336280&ets=1718336400&time_units=20"
 ```
 
 ### Cloud Runの設定
