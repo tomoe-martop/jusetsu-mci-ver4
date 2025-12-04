@@ -153,10 +153,16 @@ if [ -n "$MOCK_API_URL" ]; then
 fi
 
 # デプロイコマンドの構築
+# タイムアウト: 24時間（デフォルト10分、最大24時間）
+# 計算根拠: 30秒 × 2000件（ハウス） = 60,000秒 = 約16時間40分 + 余裕
+# ※これ以上実行ハウスが増える場合は並列処理を検討
+TASK_TIMEOUT="${TASK_TIMEOUT:-86400s}"
+
 DEPLOY_CMD="gcloud run jobs deploy $JOB_NAME \
   --image $IMAGE_NAME \
   --region $REGION \
   --parallelism 1 \
+  --task-timeout $TASK_TIMEOUT \
   --set-env-vars \"$ENV_VARS\""
 
 # Cloud SQL使用時は接続オプションを追加
