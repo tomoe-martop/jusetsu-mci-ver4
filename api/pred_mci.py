@@ -217,7 +217,7 @@ class Predictor:
 
         # encode datetime features
         df.date_time_jst = df.date_time_jst.apply(
-            lambda x: datetime.datetime.strptime(x, "%Y/%m/%d %H:%M") # :%S
+            lambda x: datetime.datetime.strptime(x, "%Y/%m/%d %H:%M:%S")
         )
         array_datetime = np.sum(np.array(list(map(self._datetime_encode, df.date_time_jst))), axis=0)
 
