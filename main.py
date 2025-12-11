@@ -292,7 +292,7 @@ def main():
 
                             for i, timestamp in enumerate(timestamps):
                                 date_time_jst = dt.fromtimestamp(timestamp).astimezone(
-                                    timezone(timedelta(hours=+9))).strftime('%Y/%m/%d %H:%M')
+                                    timezone(timedelta(hours=+9))).strftime('%Y/%m/%d %H:%M:00')
                                 # print(date_time_jst)
                                 # print(appliance_types)
 
