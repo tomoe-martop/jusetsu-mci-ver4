@@ -168,35 +168,6 @@ def main():
 
     logger.info("Start main.")
 
-    # === GCSアップロードテスト用コード（確認後削除） ===
-    TEST_GCS_UPLOAD = True  # テスト完了後はFalseに変更またはこのブロック全体を削除
-    if TEST_GCS_UPLOAD:
-        gcs_bucket_name = os.environ.get('GCS_LOG_BUCKET')
-        if gcs_bucket_name:
-            try:
-                logger.info(f"GCSアップロードテスト開始: bucket={gcs_bucket_name}")
-                storage_client = storage.Client()
-                bucket = storage_client.bucket(gcs_bucket_name)
-
-                # テストファイルを作成
-                test_filename = f"test/upload_test_{dt.now().strftime('%Y%m%d%H%M%S')}.txt"
-                test_content = f"GCS Upload Test\nTimestamp: {dt.now().isoformat()}\nBucket: {gcs_bucket_name}"
-
-                blob = bucket.blob(test_filename)
-                blob.upload_from_string(test_content)
-
-                logger.info(f"GCSアップロードテスト成功: gs://{gcs_bucket_name}/{test_filename}")
-                logger.info("テスト完了。main.pyのTEST_GCS_UPLOADをFalseにして再デプロイしてください。")
-                sys.exit(0)
-            except Exception as e:
-                logger.error(f"GCSアップロードテスト失敗: {e}")
-                logger.error(traceback.format_exc())
-                sys.exit(1)
-        else:
-            logger.error("GCS_LOG_BUCKET環境変数が設定されていません")
-            sys.exit(1)
-    # === GCSアップロードテスト用コード ここまで ===
-
     # 他のジョブ実行が実行中かチェック
     if is_another_execution_running():
         logger.info("別のCloud Run Jobが実行中のため、このジョブをスキップします")
