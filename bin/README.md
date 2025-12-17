@@ -17,7 +17,7 @@
 
 ```bash
 # プロジェクトIDを設定
-export PROJECT_ID="your-project-id"
+export PROJECT_ID="housing-equipment-dashboard"
 
 # gcloudの設定
 gcloud config set project $PROJECT_ID
