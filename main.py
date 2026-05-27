@@ -10,6 +10,9 @@ from datetime import datetime as dt, timedelta, timezone
 import csv
 from google.cloud import storage
 from google.cloud import run_v2
+import google.auth.transport.requests
+import google.oauth2.id_token
+from urllib.parse import urlparse
 
 #from api.utils import preproc
 #from api.model import EmsembleModel
@@ -279,6 +282,17 @@ def main():
                             # spid=9991かつMOCK_API_URLが定義されている場合はモックサーバーを使用
                             if str(spid) == '9991' and mock_api_url:
                                 url = mock_api_url
+                                # mock-api-stgがIAM(run.invoker)保護されている場合のID tokenをX-Serverless-Authorizationで付与
+                                # (Authorizationは既にEGCloud独自認証で使用済みのため別ヘッダ)
+                                try:
+                                    parsed = urlparse(mock_api_url)
+                                    audience = f"{parsed.scheme}://{parsed.netloc}"
+                                    id_tok = google.oauth2.id_token.fetch_id_token(
+                                        google.auth.transport.requests.Request(), audience
+                                    )
+                                    headers['X-Serverless-Authorization'] = f'Bearer {id_tok}'
+                                except Exception as e:
+                                    logger.warning(f"mock-api-stg向けID token取得失敗(認証なしで継続): {e}")
                             else:
                                 url = api_url
 
