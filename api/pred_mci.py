@@ -204,15 +204,17 @@ class Predictor:
             )
 
         # Check the number of days with sufficient electric data
-        threshold = int(self.N_MINUTES_PER_DAY * (1 - self.THRESHOLD_ELECTRIC_DATA)) # limit of lack rows per day
+        threshold = int(self.N_MINUTES_PER_DAY * (1 - self.THRESHOLD_ELECTRIC_DATA))  # max allowed NaN per day (72)
         daily_n_nan = np.sum(
-            np.isnan(df.air_conditioner.values.reshape(self.N_DAY_ELECTRIC_DATA, self.N_MINUTES_PER_DAY)), 
+            np.isnan(df.air_conditioner.values.reshape(self.N_DAY_ELECTRIC_DATA, self.N_MINUTES_PER_DAY)),
             axis=1
-        ) # daily number of lack rows
-        if (n_over_threshold_per_day := np.sum(daily_n_nan > threshold)) > self.N_DAY_LIMIT_ELECTRIC_DATA:
+        )  # daily number of NaN rows
+        n_sufficient_days = int(np.sum(daily_n_nan <= threshold))  # days with >=95% data
+        if n_sufficient_days < self.N_DAY_LIMIT_ELECTRIC_DATA:
             raise InvalidInputError(
                 202,
-                f"Electric rate >= 95% is only {n_over_threshold_per_day} days, expected >= 25 days"
+                f"Days with electric rate >= 95% is only {n_sufficient_days} days, "
+                f"expected >= {self.N_DAY_LIMIT_ELECTRIC_DATA} days"
             )
 
         # encode datetime features

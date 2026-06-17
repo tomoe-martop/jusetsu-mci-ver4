@@ -41,8 +41,10 @@ function getHouseIdFromFileName(fileName) {
 }
 
 // 日時文字列をUnix timestampに変換
+// CSVのdate_time_jstはJSTのナイーブ表記なので、明示的に+09:00を付与
 function dateTimeToTimestamp(dateTimeStr) {
-  return moment(dateTimeStr, 'YYYY/MM/DD HH:mm').unix();
+  const isoStr = dateTimeStr.replace(' ', 'T') + '+09:00';
+  return Math.floor(new Date(isoStr).getTime() / 1000);
 }
 
 // CSVファイルを読み込む
