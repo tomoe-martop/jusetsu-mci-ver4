@@ -98,7 +98,7 @@ class EgpfError(Exception):
 
 
 class EgpfRetryExhausted(EgpfError):
-    """通信系エラー（接続失敗・タイムアウト・5xx・429）でリトライが枯渇した。"""
+    """通信系エラー（接続失敗・タイムアウト・本文受信中の切断・5xx・429）でリトライが枯渇した。"""
 
     def __init__(self, attempts: int, last_error: str, context: Optional[Dict[str, Any]] = None,
                  last_status: Optional[int] = None):
@@ -175,7 +175,8 @@ def egpf_get(url: str, headers: Optional[Dict[str, str]] = None, params: Optiona
     """EGPF に GET し、通信系エラーをリトライする。
 
     - 2xx: Response をそのまま返す（202 も含む。JSON 解釈・データ検証は呼び出し側）
-    - 429 / 5xx / 接続失敗 / タイムアウト: 固定待ちで再送。枯渇したら EgpfRetryExhausted
+    - 429 / 5xx / 接続失敗 / タイムアウト / 本文受信中の切断・デコード失敗: 固定待ちで再送。
+      枯渇したら EgpfRetryExhausted
     - その他の 4xx（および 2xx/429/5xx 以外）: 再送せず即 EgpfClientError
     - 試行ごとに 1 行 INFO ログ（成功時も出す。設計書 3.3）
     """
@@ -208,6 +209,13 @@ def egpf_get(url: str, headers: Optional[Dict[str, str]] = None, params: Optiona
             last_error = "connection error: %s" % _one_line(str(e), 120)
             last_status = None
             status_label = "conn_error"
+        except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ContentDecodingError) as e:
+            # 本文受信中の切断（ChunkedEncodingError）・本文デコード失敗（ContentDecodingError）は
+            # RequestException 直下で ConnectionError 派生ではないため個別に捕捉し、接続失敗と同列に再送する
+            detail = _one_line(str(e), 120)
+            last_error = type(e).__name__ + (": " + detail if detail else "")
+            last_status = None
+            status_label = "conn_error"
         else:
             elapsed = time.monotonic() - started
             status = res.status_code
@@ -220,7 +228,7 @@ def egpf_get(url: str, headers: Optional[Dict[str, str]] = None, params: Optiona
                 last_error = "HTTP %d" % status
                 status_label = str(status)
             else:
-                log.warning("EGPF attempt=%d/%d status=%d elapsed=%.2fs %s client error, giving up",
+                log.warning("EGPF attempt=%d/%d status=%d elapsed=%.2fs %s non-2xx, giving up",
                             attempt, max_attempts, status, elapsed, ctx)
                 raise EgpfClientError(status, _safe_text(res), context)
 

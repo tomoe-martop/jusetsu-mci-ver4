@@ -210,7 +210,7 @@ class TestEgpfGetRetry:
         sleep.assert_not_called()
         lines = _attempt_lines(caplog)
         assert len(lines) == 1
-        assert "status=404" in lines[0] and lines[0].endswith("client error, giving up")
+        assert "status=404" in lines[0] and lines[0].endswith("non-2xx, giving up")
 
     @pytest.mark.parametrize("status", [400, 401, 403])
     def test_other_4xx_raise_client_error(self, mocked_io, status):
@@ -676,7 +676,6 @@ class TestEgpfGetBoundary:
         assert len(ei.value.last_error) <= len("connection error: ") + 120
 
     @pytest.mark.parametrize("exc", [
-        requests.exceptions.ContentDecodingError("failed to decode"),
         requests.exceptions.TooManyRedirects("too many"),
         requests.exceptions.MissingSchema("no schema"),
     ])
@@ -689,6 +688,58 @@ class TestEgpfGetBoundary:
 
         assert get.call_count == 1
         sleep.assert_not_called()
+
+    # 本文受信中の切断（ChunkedEncodingError）・本文デコード失敗（ContentDecodingError）は
+    # RequestException 直下で ConnectionError 派生ではないが、接続失敗と同列に再送する
+    @pytest.mark.parametrize("exc_cls, message", [
+        (requests.exceptions.ChunkedEncodingError, "Connection broken: IncompleteRead(512 bytes read, 1024 more expected)"),
+        (requests.exceptions.ContentDecodingError, "Received response with content-encoding: gzip, but failed to decode it."),
+    ])
+    def test_body_receive_errors_are_retried_until_exhausted(self, mocked_io, caplog, test_logger, exc_cls, message):
+        get, sleep = mocked_io
+        get.side_effect = [exc_cls(message)] * 5
+
+        with pytest.raises(EgpfRetryExhausted) as ei:
+            egpf_get(URL, HEADERS, PARAMS, context=CONTEXT, logger=test_logger)
+
+        exc = ei.value
+        assert exc.attempts == 5
+        assert exc.last_status is None
+        assert exc.last_error == "%s: %s" % (exc_cls.__name__, message)
+        assert exc.context == CONTEXT
+        assert get.call_count == 5
+        assert sleep.call_args_list == [call(2.0)] * 4
+        lines = _attempt_lines(caplog)
+        assert len(lines) == 5
+        assert all("status=conn_error" in line for line in lines)
+        assert lines[0].endswith("retry_in=2s") and lines[4].endswith("giving up")
+        assert classify_failure(exc) == FAILURE_EGPF_COMM
+        assert describe_failure(exc) == "5回送信して失敗: %s: %s" % (exc_cls.__name__, message)
+
+    @pytest.mark.parametrize("exc_cls", [
+        requests.exceptions.ChunkedEncodingError,
+        requests.exceptions.ContentDecodingError,
+    ])
+    def test_body_receive_error_then_200_succeeds_on_second_attempt(self, mocked_io, caplog, test_logger, exc_cls):
+        get, sleep = mocked_io
+        ok = _resp(200)
+        get.side_effect = [exc_cls("broken"), ok]
+
+        assert egpf_get(URL, HEADERS, PARAMS, logger=test_logger) is ok
+        assert get.call_count == 2
+        assert sleep.call_args_list == [call(2.0)]
+        lines = _attempt_lines(caplog)
+        assert lines[0].startswith("EGPF attempt=1/5 status=conn_error ")
+        assert lines[1].startswith("EGPF attempt=2/5 status=200 ") and lines[1].endswith(" ok")
+
+    def test_body_receive_error_without_message_keeps_class_name(self, mocked_io):
+        get, sleep = mocked_io
+        get.side_effect = requests.exceptions.ChunkedEncodingError()
+
+        with pytest.raises(EgpfRetryExhausted) as ei:
+            egpf_get(URL, HEADERS, PARAMS)
+
+        assert ei.value.last_error == "ChunkedEncodingError"
 
     def test_context_none_and_empty_do_not_break_logging(self, mocked_io, caplog, test_logger):
         get, sleep = mocked_io
@@ -707,7 +758,7 @@ class TestEgpfGetBoundary:
         with pytest.raises(EgpfClientError) as ei:
             egpf_get(URL, HEADERS, PARAMS, context={}, logger=test_logger)
         assert ei.value.context == {}
-        assert _attempt_lines(caplog)[0].endswith("client error, giving up")
+        assert _attempt_lines(caplog)[0].endswith("non-2xx, giving up")
 
     def test_context_none_yields_empty_context_on_exhaustion(self, mocked_io):
         get, sleep = mocked_io
