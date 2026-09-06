@@ -500,13 +500,16 @@ def main():
                             param = (task_id, task_house_id, -1,)
                             cursor.execute(sql, param)
                             cnx.commit()
-                        except Exception as e:
-                            logger.warning(f"Warning Occurred. failed update_task_houses. exception: %s", e)
+                        except Exception as e2:
+                            logger.warning(f"Warning Occurred. failed update_task_houses. exception: %s", e2)
                         # EGPF 全断の疑い（設計書 3.5）: 連続でリトライ枯渇したらタスクを打ち切る。
                         # 処理中のハウスは上で -1 確定済み。残りのハウスは未処理のまま（task_houses を触らない）
                         if egpf_exhausted and guard.record_exhausted():
                             remaining = len(task_houses) - house_index - 1
-                            break
+                            if remaining > 0:
+                                break
+                            # 最終ハウスで閾値到達: 未処理ハウスが無いので打ち切らず通常の完了処理（N1）にする
+                            remaining = None
                         continue
 
                 summary = dict(task_id=task_id, started_at=task_started_at, ended_at=dt.now(jst),
@@ -563,6 +566,14 @@ def main():
 
     except (Exception,) as e:
         logger.error("Error Occurred. exception: %s", e)
+        # 保留中の N1/N2（ログ退避前に最外殻へ抜けた場合）はログパス無しで先に送る。送信失敗は無視して N3 へ進む
+        for (title, summary) in pending_notifications:
+            try:
+                notify_error(title, format_task_summary(action=ACTION_RECREATE_TASK, **summary),
+                             env_label=env_label, logger=logger, source=NOTIFY_SOURCE)
+            except Exception as notify_exc:
+                logger.warning("Failed to send pending notification (%s): %s", title, notify_exc)
+        pending_notifications = []
         # N3: 最外殻の例外（DB 接続失敗等）。通知後は従来どおり exit(1)
         notify_error(TITLE_UNEXPECTED, [f"例外: {describe_failure(e)}", "処理を中断しました（exit 1）"],
                      env_label=env_label, logger=logger, source=NOTIFY_SOURCE)

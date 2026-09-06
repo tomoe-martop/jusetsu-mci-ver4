@@ -366,7 +366,7 @@ class TestN2Abort:
     def test_abort_stops_subsequent_tasks_in_same_execution(self, env):
         """現状挙動の固定: 打ち切り後は同一実行内の後続タスクに着手しない（start_at も更新しない）。"""
         cursor = FakeCursor([(500,) + DAY, (501,) + DAY],
-                            {500: [_house(i, "H%d" % i) for i in range(1, 4)], 501: [_house(9, "X1")]})
+                            {500: [_house(i, "H%d" % i) for i in range(1, 5)], 501: [_house(9, "X1")]})
 
         code, get, post, sleep = run_main(cursor, [_resp(503)] * 100)
 
@@ -374,8 +374,36 @@ class TestN2Abort:
         assert cursor.task_starts() == [500]
         assert cursor.house_selects() == [500]
         assert cursor.task_ends() == [(-1, 500)]
-        assert get.call_count == 15
+        assert get.call_count == 15  # 3 ハウスで閾値到達、4 ハウス目は未処理
         assert post.call_count == 1 and "task_id: 500　" in _text(post)
+        assert "未処理 1" in _text(post)
+
+    def test_threshold_reached_on_last_house_completes_normally(self, env, capsys):
+        # 最終ハウスで閾値到達（未処理 0 件）は打ち切りではなく通常完了: tasks.status=1・N1 通知・後続タスクも処理する
+        cursor = FakeCursor([(505,) + DAY, (506,) + DAY],
+                            {505: [_house(i, "H%d" % i) for i in range(1, 4)], 506: [_house(9, "X1")]})
+        events = []
+
+        code, get, post, sleep = run_main(cursor, [_resp(503)] * 15 + [_resp(200)], events=events)
+
+        assert code == 0
+        assert get.call_count == 16  # 505: 3 ハウス × 5 試行、506: 1 回で成功
+        assert cursor.task_starts() == [505, 506]
+        assert cursor.task_ends() == [(1, 505), (1, 506)]
+        assert [u for u in cursor.house_updates() if u[1] == -1] == [(1, -1, 10), (2, -1, 10), (3, -1, 10)]
+        assert (9, 1, 100) in cursor.house_updates()
+        assert post.call_count == 1
+        text = _text(post)
+        assert text.startswith("[MCI Ver4][STG] 月次予測 失敗あり\ntask_id: 505　実行: ")
+        assert "対象 3件 / 成功 0 / 失敗 3" in text
+        assert "未処理" not in text and "打ち切り" not in text
+        assert " - H3: EGPF通信エラー（5回送信して失敗: HTTP 503）" in text
+        assert "ログ: gs://%s/logs/predictor_0000000506_" % GCS_BUCKET in text  # 実行末尾（最後のタスク）の退避ファイル
+        # X1 の CSV → ログ退避 → N1 の順（通知はログ退避後）
+        assert [e[0] for e in events] == ["blob", "blob", "post"]
+        assert events[1][1].startswith("logs/predictor_0000000506_")
+        out, err = capsys.readouterr()
+        assert "Aborting task." not in out and "Aborting task." not in err
 
     def test_success_resets_consecutive_counter(self, env):
         houses = [_house(i, "H%d" % i) for i in range(1, 6)]
@@ -410,8 +438,9 @@ class TestN2Abort:
         assert "対象 4件 / 成功 0 / 失敗 3 / 未処理 1" in _text(post)
 
     def test_client_errors_do_not_count_toward_abort(self, env):
-        # 404 はリトライ枯渇ではないため打ち切りカウントに入らない（リセットもしない）
-        houses = [_house(i, "H%d" % i) for i in range(1, 6)]
+        # 404 はリトライ枯渇ではないため打ち切りカウントに入らない（カウントすれば H3 で打ち切り＝未処理 3）が、
+        # リセットもしない（リセットすれば打ち切りなし）。H1/H3/H5 の枯渇で H5 の時点で打ち切り、H6 は未処理
+        houses = [_house(i, "H%d" % i) for i in range(1, 7)]
         cursor = FakeCursor([(620,) + DAY], {620: houses})
         side = [_resp(503)] * 5 + [_resp(404)] + [_resp(503)] * 5 + [_resp(404)] + [_resp(503)] * 5
 
@@ -420,7 +449,8 @@ class TestN2Abort:
         assert code == 0
         assert get.call_count == 17
         assert cursor.task_ends() == [(-1, 620)]
-        assert "対象 5件 / 成功 0 / 失敗 5 / 未処理 0" in _text(post)
+        assert [u for u in cursor.house_updates() if u[0] == 6] == []
+        assert "対象 6件 / 成功 0 / 失敗 5 / 未処理 1" in _text(post)
 
     def test_abort_disabled_by_env_zero(self, env, monkeypatch):
         monkeypatch.setenv("EGPF_ABORT_AFTER_CONSECUTIVE_FAILURES", "0")
@@ -436,12 +466,12 @@ class TestN2Abort:
         assert "未処理" not in _text(post)
 
     def test_abort_log_goes_to_stderr(self, env, capsys):
-        cursor = FakeCursor([(640,) + DAY], {640: [_house(i, "H%d" % i) for i in range(1, 4)]})
+        cursor = FakeCursor([(640,) + DAY], {640: [_house(i, "H%d" % i) for i in range(1, 5)]})
 
         run_main(cursor, [_resp(503)] * 100)
 
         out, err = capsys.readouterr()
-        assert "Aborting task. task_id: 640, consecutive EGPF retry exhaustion. remaining houses: 0" in err
+        assert "Aborting task. task_id: 640, consecutive EGPF retry exhaustion. remaining houses: 1" in err
         assert "Aborting task." not in out
 
 
@@ -569,6 +599,37 @@ class TestN3Unexpected:
         assert _text(post, 1).startswith("[MCI Ver4][STG] 月次予測 失敗あり\ntask_id: 904　")
         assert "ログ: gs://" in _text(post, 1)
         assert [e[0] for e in events] == ["post", "blob", "post"]
+
+    @pytest.mark.parametrize("post_status", [200, 500])
+    def test_outermost_exception_flushes_pending_n1_before_n3(self, env, post_status):
+        # タスク 1 の N1 が保留中に、タスク 2 の task 単位 except 内の UPDATE tasks で再度失敗 → 最外殻 except。
+        # 保留中の N1 はログパス無しで N3 より先に送られ（送信失敗でも N3 へ進む）、終了コードは 1。
+        # ログ退避は finally で行われる（task_id 不明）
+        def fail_on(sql, params):
+            if sql.startswith("SELECT id AS task_house_id") and params == (907,):
+                return RuntimeError("select failed")
+            if sql.startswith("UPDATE `tasks` SET end_at") and params == (-1, 907):
+                return RuntimeError("db connection lost")
+            return None
+
+        cursor = FakeCursor([(906,) + DAY, (907,) + DAY], {906: [_house(1, "H1")]}, fail_on=fail_on)
+        events = []
+
+        code, get, post, sleep = run_main(cursor, [_resp(404)], events=events, post_status=post_status)
+
+        assert code == 1
+        assert cursor.task_ends() == [(1, 906), (-1, 907)]
+        assert post.call_count == 2
+        n1 = _text(post, 0)
+        assert n1.startswith("[MCI Ver4][STG] 月次予測 失敗あり\ntask_id: 906　実行: ")
+        assert "対象 1件 / 成功 0 / 失敗 1" in n1
+        assert " - H1: EGPF応答エラー（HTTP 404）" in n1
+        assert "ログ:" not in n1
+        assert n1.endswith("対応: ダッシュボード「頭の安心チェック」から再実行タスクを作成してください")
+        assert _text(post, 1) == (
+            "[MCI Ver4][STG] 予期しないエラー\n例外: RuntimeError: db connection lost\n処理を中断しました（exit 1）")
+        assert [e[0] for e in events] == ["post", "post", "blob"]
+        assert events[2][1].startswith("logs/predictor_unknown_")
 
 
 # ---------------------------------------------------------------------------
