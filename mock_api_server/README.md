@@ -133,6 +133,46 @@ print(response.json())
 | 37 | IH | IH |
 | 301 | ヒーター | Heater |
 
+## 障害注入（STG 試験用）
+
+EGPF 障害を疑似的に再現するため、`GET /0.2/estimated_data` に環境変数で失敗・遅延を注入できます。未設定なら通常どおり応答します。
+
+| 環境変数 | 説明 | 例 |
+|---|---|---|
+| `MOCK_FAIL_STATUS` | 設定時、この HTTP ステータスで失敗させる。未設定または 0 なら無効 | `503` |
+| `MOCK_FAIL_COUNT` | 最初の N リクエストだけ失敗させる。0 または未設定なら常時失敗 | `2` |
+| `MOCK_DELAY_MS` | 応答前に待つミリ秒（read timeout の再現用。失敗注入と併用可） | `40000` |
+
+- 失敗回数のカウンタは **プロセス（Cloud Run のインスタンス）単位** です。Cloud Run で `MOCK_FAIL_COUNT` を使う場合はインスタンスが複数立たないよう `--max-instances 1` にするか、常時失敗（`MOCK_FAIL_COUNT` 未設定）で試験してください
+- 現在の設定と注入回数は `GET /health` の `faultInjection` で確認できます
+
+ローカルでの例:
+
+```bash
+# 503 を 2 回返してから正常応答（リトライで成功するケース）
+MOCK_FAIL_STATUS=503 MOCK_FAIL_COUNT=2 npm start
+
+# 503 固定（リトライ枯渇・打ち切りのケース）
+MOCK_FAIL_STATUS=503 npm start
+
+# 40 秒遅延（read timeout 30 秒のケース）
+MOCK_DELAY_MS=40000 npm start
+```
+
+Cloud Run（`mock-api-stg`）での例:
+
+```bash
+# 注入を有効化
+gcloud run services update mock-api-stg --region asia-northeast1 \
+  --update-env-vars MOCK_FAIL_STATUS=503,MOCK_FAIL_COUNT=2
+
+# 注入を解除
+gcloud run services update mock-api-stg --region asia-northeast1 \
+  --remove-env-vars MOCK_FAIL_STATUS,MOCK_FAIL_COUNT,MOCK_DELAY_MS
+```
+
+※ `deploy.sh` は `--set-env-vars` で環境変数を丸ごと置き換えるため、再デプロイすると注入設定は消えます。
+
 ## Unix Timestamp変換
 
 日時をUnix timestampに変換するツール:
