@@ -398,10 +398,10 @@ class TestN2Abort:
         assert "対象 3件 / 成功 0 / 失敗 3" in text
         assert "未処理" not in text and "打ち切り" not in text
         assert " - H3: EGPF通信エラー（5回送信して失敗: HTTP 503）" in text
-        assert "ログ: gs://%s/logs/predictor_0000000506_" % GCS_BUCKET in text  # 実行末尾（最後のタスク）の退避ファイル
+        assert "ログ: gs://%s/logs/predictor_unknown_" % GCS_BUCKET in text  # 複数タスク実行では共有ログのため task_id を埋めない
         # X1 の CSV → ログ退避 → N1 の順（通知はログ退避後）
         assert [e[0] for e in events] == ["blob", "blob", "post"]
-        assert events[1][1].startswith("logs/predictor_0000000506_")
+        assert events[1][1].startswith("logs/predictor_unknown_")
         out, err = capsys.readouterr()
         assert "Aborting task." not in out and "Aborting task." not in err
 
@@ -438,19 +438,20 @@ class TestN2Abort:
         assert "対象 4件 / 成功 0 / 失敗 3 / 未処理 1" in _text(post)
 
     def test_client_errors_do_not_count_toward_abort(self, env):
-        # 404 はリトライ枯渇ではないため打ち切りカウントに入らない（カウントすれば H3 で打ち切り＝未処理 3）が、
-        # リセットもしない（リセットすれば打ち切りなし）。H1/H3/H5 の枯渇で H5 の時点で打ち切り、H6 は未処理
+        # 404 は EGPF 到達成功なので連続枯渇カウントをリセットする。H1/H3/H5 はそれぞれ単発枯渇に留まり、打ち切りなし。
         houses = [_house(i, "H%d" % i) for i in range(1, 7)]
         cursor = FakeCursor([(620,) + DAY], {620: houses})
-        side = [_resp(503)] * 5 + [_resp(404)] + [_resp(503)] * 5 + [_resp(404)] + [_resp(503)] * 5
+        side = [_resp(503)] * 5 + [_resp(404)] + [_resp(503)] * 5 + [_resp(404)] + [_resp(503)] * 5 + [_resp(200)]
 
         code, get, post, sleep = run_main(cursor, side)
 
         assert code == 0
-        assert get.call_count == 17
-        assert cursor.task_ends() == [(-1, 620)]
-        assert [u for u in cursor.house_updates() if u[0] == 6] == []
-        assert "対象 6件 / 成功 0 / 失敗 5 / 未処理 1" in _text(post)
+        assert get.call_count == 18
+        assert cursor.task_ends() == [(1, 620)]
+        assert len([u for u in cursor.house_updates() if u[1] == -1]) == 5
+        assert (6, 1, 100) in cursor.house_updates()
+        assert "対象 6件 / 成功 1 / 失敗 5" in _text(post)
+        assert "未処理" not in _text(post)
 
     def test_abort_disabled_by_env_zero(self, env, monkeypatch):
         monkeypatch.setenv("EGPF_ABORT_AFTER_CONSECUTIVE_FAILURES", "0")

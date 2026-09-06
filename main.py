@@ -25,7 +25,7 @@ sys.path.insert(0, api_dir)
 
 # EGPF 連携共通モジュール（リトライ・打ち切り・通知・失敗分類）
 from egpf_common import (
-    egpf_get, EgpfRetryExhausted, ConsecutiveFailureGuard, notify_error,
+    egpf_get, EgpfRetryExhausted, EgpfClientError, ConsecutiveFailureGuard, notify_error,
     classify_failure, describe_failure, format_task_summary,
     TITLE_TASK_FAILED, TITLE_TASK_ABORTED, TITLE_UNEXPECTED, ACTION_RECREATE_TASK,
 )
@@ -236,6 +236,7 @@ def main():
     env_label = os.environ.get('ERROR_NOTIFY_ENV_LABEL')
     jst = timezone(timedelta(hours=+9))
     pending_notifications = []  # (title, summary): N1/N2 はログの GCS アップロード後にパスを添えて送る
+    processed_task_count = 0
     csv_header = ['date_time_jst', 'air_conditioner', 'clothes_washer', 'microwave', 'refrigerator', 'rice_cooker',
                   'TV', 'cleaner', 'IH', 'Heater']
     app_type_ids = [2, 5, 20, 24, 25, 30, 31, 37, 301]
@@ -288,6 +289,7 @@ def main():
 
         for (task_id, date_from, date_to) in tasks:
             should_upload_log = True  # タスク処理開始
+            processed_task_count += 1
             task_started_at = dt.now(jst)
             failures = []  # (houseid, 失敗分類, 詳細)
             succeeded = 0
@@ -510,6 +512,8 @@ def main():
                                 break
                             # 最終ハウスで閾値到達: 未処理ハウスが無いので打ち切らず通常の完了処理（N1）にする
                             remaining = None
+                        elif isinstance(e, EgpfClientError):
+                            guard.record_success()
                         continue
 
                 summary = dict(task_id=task_id, started_at=task_started_at, ended_at=dt.now(jst),
@@ -553,7 +557,8 @@ def main():
             logger.debug(f"Completed task. task_id: %s", task_id)
 
         # predictor.logをCloud Storageにアップロード
-        log_path = upload_log_to_gcs(task_id)
+        log_task_id = task_id if processed_task_count == 1 else None
+        log_path = upload_log_to_gcs(log_task_id)
         should_upload_log = False  # finally での二重アップロードを防ぐ
 
         # N1/N2: ログのパスを添えてタスク単位の通知を送る
