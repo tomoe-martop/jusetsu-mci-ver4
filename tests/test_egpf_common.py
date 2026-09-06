@@ -482,3 +482,348 @@ class TestNotifyError:
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert len(warnings) == 1
         assert "no route" in warnings[0].getMessage()
+
+
+# ---------------------------------------------------------------------------
+# egpf_get: 境界・混在ケース（設計書 3.1 / 3.2 の追加検証）
+# ---------------------------------------------------------------------------
+def _status_labels(caplog):
+    return [line.split()[2] for line in _attempt_lines(caplog)]
+
+
+class TestEgpfGetBoundary:
+    def test_total_wait_is_2s_times_4_for_5_attempts(self, mocked_io):
+        get, sleep = mocked_io
+        get.return_value = _resp(503)
+
+        with pytest.raises(EgpfRetryExhausted):
+            egpf_get(URL, HEADERS, PARAMS)
+
+        assert get.call_count == 5
+        assert sleep.call_count == 4  # 最後の試行の後は待たない
+        assert sum(c.args[0] for c in sleep.call_args_list) == pytest.approx(8.0)
+
+    def test_wait_from_env_applies_to_every_retry(self, mocked_io, monkeypatch, caplog, test_logger):
+        monkeypatch.setenv("EGPF_RETRY_WAIT_SEC", "0.5")
+        get, sleep = mocked_io
+        get.return_value = _resp(502)
+
+        with pytest.raises(EgpfRetryExhausted):
+            egpf_get(URL, HEADERS, PARAMS, logger=test_logger)
+
+        assert sleep.call_args_list == [call(0.5)] * 4
+        assert sum(c.args[0] for c in sleep.call_args_list) == pytest.approx(2.0)
+        assert all(line.endswith("retry_in=0.5s") for line in _attempt_lines(caplog)[:4])
+
+    def test_negative_wait_is_clamped_to_zero(self, mocked_io, monkeypatch, caplog, test_logger):
+        monkeypatch.setenv("EGPF_RETRY_WAIT_SEC", "-3")
+        get, sleep = mocked_io
+        get.side_effect = [_resp(503), _resp(200)]
+
+        egpf_get(URL, HEADERS, PARAMS, logger=test_logger)
+
+        assert get_retry_config()["wait_sec"] == 0.0
+        assert sleep.call_args_list == [call(0.0)]
+        assert _attempt_lines(caplog)[0].endswith("retry_in=0s")
+
+    def test_max_attempts_1_means_no_retry(self, mocked_io, monkeypatch, caplog, test_logger):
+        monkeypatch.setenv("EGPF_RETRY_MAX_ATTEMPTS", "1")
+        get, sleep = mocked_io
+        get.return_value = _resp(503)
+
+        with pytest.raises(EgpfRetryExhausted) as ei:
+            egpf_get(URL, HEADERS, PARAMS, context=CONTEXT, logger=test_logger)
+
+        assert ei.value.attempts == 1
+        assert ei.value.last_status == 503
+        assert str(ei.value) == "EGPF request failed after 1 attempt(s): HTTP 503"
+        assert get.call_count == 1
+        sleep.assert_not_called()
+        lines = _attempt_lines(caplog)
+        assert len(lines) == 1
+        assert lines[0].startswith("EGPF attempt=1/1 status=503 ")
+        assert lines[0].endswith("giving up")
+
+    @pytest.mark.parametrize("raw", ["0", "-2"])
+    def test_max_attempts_below_1_is_clamped_to_1(self, mocked_io, monkeypatch, raw):
+        monkeypatch.setenv("EGPF_RETRY_MAX_ATTEMPTS", raw)
+        assert get_retry_config()["max_attempts"] == 1
+        get, sleep = mocked_io
+        get.return_value = _resp(500)
+
+        with pytest.raises(EgpfRetryExhausted) as ei:
+            egpf_get(URL, HEADERS, PARAMS)
+
+        assert ei.value.attempts == 1
+        assert get.call_count == 1
+        sleep.assert_not_called()
+
+    def test_mixed_5xx_and_429_then_200_on_last_attempt(self, mocked_io, caplog, test_logger):
+        get, sleep = mocked_io
+        ok = _resp(200)
+        get.side_effect = [_resp(500), _resp(502), _resp(504), _resp(429), ok]
+
+        assert egpf_get(URL, HEADERS, PARAMS, logger=test_logger) is ok
+
+        assert get.call_count == 5
+        assert sleep.call_args_list == [call(2.0)] * 4
+        assert _status_labels(caplog) == ["status=500", "status=502", "status=504", "status=429", "status=200"]
+        lines = _attempt_lines(caplog)
+        assert lines[-1].startswith("EGPF attempt=5/5 status=200 ") and lines[-1].endswith(" ok")
+        assert all(c.kwargs["timeout"] == (10.0, 30.0) for c in get.call_args_list)
+
+    def test_mixed_timeout_connection_error_and_5xx_then_200(self, mocked_io, caplog, test_logger):
+        get, sleep = mocked_io
+        ok = _resp(200)
+        get.side_effect = [
+            requests.exceptions.ReadTimeout("read timed out"),
+            _resp(503),
+            requests.exceptions.ConnectionError("Connection reset by peer"),
+            requests.exceptions.ConnectTimeout("connect timed out"),
+            ok,
+        ]
+
+        assert egpf_get(URL, HEADERS, PARAMS, logger=test_logger) is ok
+
+        assert get.call_count == 5
+        assert sleep.call_count == 4
+        assert _status_labels(caplog) == ["status=timeout", "status=503", "status=conn_error", "status=timeout", "status=200"]
+
+    def test_last_error_and_status_reflect_the_final_attempt(self, mocked_io):
+        get, sleep = mocked_io
+        get.side_effect = [_resp(503)] * 4 + [requests.exceptions.ReadTimeout("read timed out")]
+        with pytest.raises(EgpfRetryExhausted) as ei:
+            egpf_get(URL, HEADERS, PARAMS)
+        assert ei.value.last_status is None
+        assert ei.value.last_error == "read timeout"
+
+        get.side_effect = [requests.exceptions.ReadTimeout("read timed out")] * 4 + [_resp(502)]
+        with pytest.raises(EgpfRetryExhausted) as ei:
+            egpf_get(URL, HEADERS, PARAMS)
+        assert ei.value.last_status == 502
+        assert ei.value.last_error == "HTTP 502"
+
+    def test_4xx_after_some_retries_gives_up_immediately(self, mocked_io):
+        get, sleep = mocked_io
+        get.side_effect = [_resp(503), _resp(503), _resp(401)]
+
+        with pytest.raises(EgpfClientError) as ei:
+            egpf_get(URL, HEADERS, PARAMS)
+
+        assert ei.value.status == 401
+        assert get.call_count == 3
+        assert sleep.call_count == 2
+
+    @pytest.mark.parametrize("status", [300, 301, 302, 304, 100])
+    def test_non_2xx_non_retryable_statuses_raise_client_error(self, mocked_io, status):
+        # 2xx / 429 / 5xx 以外はすべて「再送しない」側（リダイレクト等も含む）
+        get, sleep = mocked_io
+        get.return_value = _resp(status)
+
+        with pytest.raises(EgpfClientError) as ei:
+            egpf_get(URL, HEADERS, PARAMS)
+
+        assert ei.value.status == status
+        sleep.assert_not_called()
+
+    @pytest.mark.parametrize("status", [200, 201, 204, 299])
+    def test_any_2xx_is_returned(self, mocked_io, status):
+        get, sleep = mocked_io
+        res = _resp(status)
+        get.return_value = res
+        assert egpf_get(URL, HEADERS, PARAMS) is res
+        sleep.assert_not_called()
+
+    @pytest.mark.parametrize("exc", [
+        requests.exceptions.ProxyError("proxy refused"),
+        requests.exceptions.SSLError("handshake failed"),
+        requests.exceptions.ConnectTimeout("connect timed out"),
+    ])
+    def test_connection_error_subclasses_are_retried(self, mocked_io, exc):
+        get, sleep = mocked_io
+        ok = _resp(200)
+        get.side_effect = [exc, ok]
+
+        assert egpf_get(URL, HEADERS, PARAMS) is ok
+        assert get.call_count == 2
+        assert sleep.call_args_list == [call(2.0)]
+
+    @pytest.mark.parametrize("exc, expected", [
+        (requests.exceptions.ConnectTimeout("connect timed out"), "connect timeout"),
+        (requests.exceptions.ReadTimeout("read timed out"), "read timeout"),
+        (requests.exceptions.Timeout("timed out"), "timeout"),
+    ])
+    def test_timeout_kind_is_reflected_in_last_error(self, mocked_io, exc, expected):
+        get, sleep = mocked_io
+        get.side_effect = exc
+
+        with pytest.raises(EgpfRetryExhausted) as ei:
+            egpf_get(URL, HEADERS, PARAMS)
+
+        assert ei.value.last_error == expected
+        assert ei.value.last_status is None
+        assert get.call_count == 5
+
+    def test_connection_error_message_is_one_line_and_truncated(self, mocked_io):
+        get, sleep = mocked_io
+        get.side_effect = requests.exceptions.ConnectionError("line1\nline2 " + "x" * 300)
+
+        with pytest.raises(EgpfRetryExhausted) as ei:
+            egpf_get(URL, HEADERS, PARAMS)
+
+        assert "\n" not in ei.value.last_error
+        assert ei.value.last_error.startswith("connection error: line1 line2 ")
+        assert len(ei.value.last_error) <= len("connection error: ") + 120
+
+    @pytest.mark.parametrize("exc", [
+        requests.exceptions.ContentDecodingError("failed to decode"),
+        requests.exceptions.TooManyRedirects("too many"),
+        requests.exceptions.MissingSchema("no schema"),
+    ])
+    def test_non_connection_request_exceptions_propagate_without_retry(self, mocked_io, exc):
+        get, sleep = mocked_io
+        get.side_effect = exc
+
+        with pytest.raises(type(exc)):
+            egpf_get(URL, HEADERS, PARAMS)
+
+        assert get.call_count == 1
+        sleep.assert_not_called()
+
+    def test_context_none_and_empty_do_not_break_logging(self, mocked_io, caplog, test_logger):
+        get, sleep = mocked_io
+        get.side_effect = [_resp(503), _resp(200)]
+
+        egpf_get(URL, HEADERS, PARAMS, context=None, logger=test_logger)
+
+        lines = _attempt_lines(caplog)
+        assert len(lines) == 2
+        assert lines[0].startswith("EGPF attempt=1/5 status=503 ") and lines[0].endswith("retry_in=2s")
+        assert lines[1].startswith("EGPF attempt=2/5 status=200 ") and lines[1].endswith(" ok")
+
+        caplog.clear()
+        get.side_effect = None
+        get.return_value = _resp(404)
+        with pytest.raises(EgpfClientError) as ei:
+            egpf_get(URL, HEADERS, PARAMS, context={}, logger=test_logger)
+        assert ei.value.context == {}
+        assert _attempt_lines(caplog)[0].endswith("client error, giving up")
+
+    def test_context_none_yields_empty_context_on_exhaustion(self, mocked_io):
+        get, sleep = mocked_io
+        get.return_value = _resp(503)
+
+        with pytest.raises(EgpfRetryExhausted) as ei:
+            egpf_get(URL, HEADERS, PARAMS)
+
+        assert ei.value.context == {}
+
+    def test_default_logger_is_module_logger(self, mocked_io, caplog):
+        caplog.set_level(logging.INFO, logger="egpf_common")
+        get, _ = mocked_io
+        get.return_value = _resp(200)
+
+        egpf_get(URL, HEADERS, PARAMS)
+
+        assert any(r.name == "egpf_common" and r.getMessage().startswith("EGPF attempt=1/5 status=200 ")
+                   for r in caplog.records)
+
+    def test_headers_and_params_default_to_none(self, mocked_io):
+        get, _ = mocked_io
+        get.return_value = _resp(200)
+
+        egpf_get(URL)
+
+        get.assert_called_once_with(URL, headers=None, params=None, timeout=(10.0, 30.0))
+
+    def test_timeout_tuple_order_is_connect_then_read(self, mocked_io, monkeypatch):
+        monkeypatch.setenv("EGPF_CONNECT_TIMEOUT_SEC", "1")
+        monkeypatch.setenv("EGPF_READ_TIMEOUT_SEC", "99")
+        get, _ = mocked_io
+        get.return_value = _resp(200)
+
+        egpf_get(URL, HEADERS, PARAMS)
+
+        assert get.call_args.kwargs["timeout"] == (1.0, 99.0)
+
+    def test_guard_negative_threshold_is_disabled(self):
+        guard = ConsecutiveFailureGuard(threshold=-1)
+        assert guard.threshold == 0
+        assert all(guard.record_exhausted() is False for _ in range(5))
+        assert guard.consecutive_failures == 5
+
+
+# ---------------------------------------------------------------------------
+# notify_error: payload とタイムアウトの固定（設計書 4.4 / 5.2）
+# ---------------------------------------------------------------------------
+class TestNotifyErrorPayload:
+    WEBHOOK = "https://hooks.slack.test/services/T/B/x"
+
+    def test_payload_is_text_only_with_10s_timeout(self, monkeypatch):
+        monkeypatch.setenv("ERROR_NOTIFY_SLACK_WEBHOOK_URL", self.WEBHOOK)
+        with patch.object(egpf_common.requests, "post") as post:
+            post.return_value = _resp(200)
+            assert notify_error("t", ["a", None, 3], env_label="STG", source="MCI Ver4") is True
+
+        assert post.call_args.args == (self.WEBHOOK,)
+        assert set(post.call_args.kwargs) == {"json", "timeout"}  # headers/data 等は付けない
+        assert post.call_args.kwargs["json"] == {"text": "[MCI Ver4][STG] t\na\n3"}  # None は省き、非文字列は str 化
+        assert post.call_args.kwargs["timeout"] == 10.0
+        assert egpf_common.NOTIFY_TIMEOUT_SEC == 10.0
+
+    def test_webhook_url_is_stripped(self, monkeypatch):
+        monkeypatch.setenv("ERROR_NOTIFY_SLACK_WEBHOOK_URL", "  %s \n" % self.WEBHOOK)
+        with patch.object(egpf_common.requests, "post") as post:
+            post.return_value = _resp(200)
+            notify_error("t", [])
+        assert post.call_args.args == (self.WEBHOOK,)
+
+    def test_explicit_env_label_overrides_env_var(self, monkeypatch):
+        monkeypatch.setenv("ERROR_NOTIFY_SLACK_WEBHOOK_URL", self.WEBHOOK)
+        monkeypatch.setenv("ERROR_NOTIFY_ENV_LABEL", "本番")
+        with patch.object(egpf_common.requests, "post") as post:
+            post.return_value = _resp(200)
+            notify_error("t", [], env_label="STG")
+        assert post.call_args.kwargs["json"]["text"] == "[STG] t"
+
+    def test_blank_env_label_var_is_omitted(self, monkeypatch):
+        monkeypatch.setenv("ERROR_NOTIFY_SLACK_WEBHOOK_URL", self.WEBHOOK)
+        monkeypatch.setenv("ERROR_NOTIFY_ENV_LABEL", "")
+        with patch.object(egpf_common.requests, "post") as post:
+            post.return_value = _resp(200)
+            notify_error("t", ["x"], source="MCI Ver4")
+        assert post.call_args.kwargs["json"]["text"] == "[MCI Ver4] t\nx"
+
+    @pytest.mark.parametrize("status, expected", [(200, True), (204, True), (299, True), (301, False), (404, False)])
+    def test_only_2xx_counts_as_sent(self, monkeypatch, status, expected):
+        monkeypatch.setenv("ERROR_NOTIFY_SLACK_WEBHOOK_URL", self.WEBHOOK)
+        with patch.object(egpf_common.requests, "post") as post:
+            post.return_value = _resp(status, text="body")
+            assert notify_error("t", ["x"]) is expected
+
+    def test_post_timeout_is_swallowed_with_warning(self, monkeypatch, caplog, test_logger):
+        monkeypatch.setenv("ERROR_NOTIFY_SLACK_WEBHOOK_URL", self.WEBHOOK)
+        with patch.object(egpf_common.requests, "post") as post:
+            post.side_effect = requests.exceptions.Timeout("slack timed out")
+            assert notify_error("t", ["x"], logger=test_logger) is False
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "slack timed out" in warnings[0].getMessage()
+
+
+class TestFormatTaskSummaryBoundary:
+    def test_period_with_only_one_end(self):
+        assert format_task_summary(1, datetime(2026, 8, 2, 0, 0), None, 1, 1, [])[0] == "task_id: 1　実行: 2026-08-02 00:00〜"
+        assert format_task_summary(1, None, datetime(2026, 8, 2, 0, 47), 1, 1, [])[0] == "task_id: 1　実行: 〜2026-08-02 00:47"
+
+    def test_remaining_zero_still_reports_abort(self):
+        lines = format_task_summary(2, None, None, 3, 0, [("A", FAILURE_EGPF_COMM, "5回送信して失敗: HTTP 503")] * 3,
+                                    remaining=0, log_path="gs://b/logs/x.log", action="act")
+        assert lines[1] == "対象 3件 / 成功 0 / 失敗 3 / 未処理 0"
+        assert lines[2] == "EGPF への連続失敗によりタスクを打ち切りました（残り 0件は未処理。復旧後に再実行が必要）"
+        assert lines[-2:] == ["ログ: gs://b/logs/x.log", "対応: act"]
+
+    def test_failures_accepts_any_sequence_and_ids(self):
+        lines = format_task_summary(3, None, None, 2, 0, (("H1", FAILURE_OTHER, ""), (42, FAILURE_TOTAL_LOSS, "d")))
+        assert " - H1: その他" in lines
+        assert " - 42: Total loss（d）" in lines
