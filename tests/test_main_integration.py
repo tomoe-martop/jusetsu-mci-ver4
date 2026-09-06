@@ -670,11 +670,68 @@ class TestLoggingAndLogUpload:
             assert file_handler in handlers
             streams = [h for h in handlers if type(h) is logging.StreamHandler]
             assert len(streams) == 2
-            assert {h.stream for h in streams} == {sys.stdout, sys.stderr}
+            assert {(h.stream, h.level) for h in streams} == {(sys.stdout, logging.INFO), (sys.stderr, logging.ERROR)}
             assert root.level == logging.INFO
+            assert file_handler.level == logging.INFO
         finally:
             root.removeHandler(file_handler)
             file_handler.close()
+
+    @pytest.mark.parametrize("log_level, root_level, file_level, stdout_level, stderr_level", [
+        ("DEBUG", logging.DEBUG, logging.DEBUG, logging.DEBUG, logging.ERROR),
+        ("INFO", logging.INFO, logging.INFO, logging.INFO, logging.ERROR),
+        ("WARNING", logging.INFO, logging.INFO, logging.WARNING, logging.ERROR),
+        ("ERROR", logging.INFO, logging.INFO, logging.ERROR, logging.ERROR),
+        ("CRITICAL", logging.INFO, logging.INFO, logging.CRITICAL, logging.CRITICAL),
+        ("bogus", logging.INFO, logging.INFO, logging.INFO, logging.ERROR),
+    ])
+    def test_log_level_applies_to_stdout_only_and_file_keeps_info(self, env, tmp_path, monkeypatch, log_level,
+                                                                  root_level, file_level, stdout_level, stderr_level):
+        # LOG_LEVEL は stdout/stderr にだけ効き、predictor.log 用 FileHandler は常に INFO 以上（DEBUG 時は DEBUG も）
+        monkeypatch.setenv("LOG_LEVEL", log_level)
+        file_handler = logging.FileHandler(str(tmp_path / "keep.log"))
+        root = logging.getLogger()
+        root.addHandler(file_handler)
+        try:
+            main.configure_logging()
+            assert root.level == root_level
+            assert file_handler.level == file_level
+            levels = {h.stream: h.level for h in root.handlers if type(h) is logging.StreamHandler}
+            assert levels == {sys.stdout: stdout_level, sys.stderr: stderr_level}
+        finally:
+            root.removeHandler(file_handler)
+            file_handler.close()
+
+    def test_invalid_log_level_falls_back_to_info_with_warning(self, env, monkeypatch, capsys):
+        monkeypatch.setenv("LOG_LEVEL", "bogus")
+
+        main.configure_logging()
+
+        out, err = capsys.readouterr()
+        assert "LOG_LEVEL='BOGUS' is not a valid level. using INFO" in out
+        assert err == ""
+
+    def test_file_handler_records_info_even_when_log_level_is_warning(self, env, tmp_path, monkeypatch, capsys):
+        # 要件#102: 再送を含む通信ログは LOG_LEVEL=WARNING でも predictor.log（GCS 退避）に残る
+        monkeypatch.setenv("LOG_LEVEL", "WARNING")
+        keep_log = tmp_path / "keep.log"
+        file_handler = logging.FileHandler(str(keep_log))
+        root = logging.getLogger()
+        root.addHandler(file_handler)
+        cursor = FakeCursor([(908,) + DAY], {908: [_house(1, "H1")]})
+        try:
+            run_main(cursor, [_resp(503), _resp(200)])
+        finally:
+            root.removeHandler(file_handler)
+            file_handler.close()
+
+        out, err = capsys.readouterr()
+        assert "EGPF attempt=1/5" not in out and "Start main." not in out
+        logged = keep_log.read_text(encoding="utf-8")
+        assert "Start main." in logged
+        assert "EGPF attempt=1/5 status=503 " in logged and "retry_in=2s" in logged
+        assert "EGPF attempt=2/5 status=200 " in logged
+        assert "Completed main." in logged
 
     def test_log_saved_locally_when_bucket_unset(self, env, monkeypatch):
         monkeypatch.delenv("GCS_LOG_BUCKET")

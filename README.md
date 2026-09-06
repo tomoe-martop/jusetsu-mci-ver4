@@ -144,7 +144,7 @@ task_id: 433　実行: 2026-08-02 00:00〜00:47
 | `EGPF_ABORT_AFTER_CONSECUTIVE_FAILURES` | 3 | 連続リトライ枯渇の打ち切り閾値（0 で無効） |
 | `ERROR_NOTIFY_SLACK_WEBHOOK_URL` | （未設定） | Slack Incoming Webhook URL。未設定なら通知しない |
 | `ERROR_NOTIFY_ENV_LABEL` | deploy.sh が `本番`（`ENV=prd`）／`STG` を設定 | 通知の先頭に付く環境ラベル |
-| `LOG_LEVEL` | INFO（main.py）／ERROR（deploy.sh） | ログレベル。リトライの試行ログは INFO のため、確認したい場合は `INFO` を設定する |
+| `LOG_LEVEL` | INFO（main.py・deploy.sh とも） | 標準出力／標準エラー出力（Cloud Logging）のログレベル。`predictor.log`（GCS 退避ログ）には LOG_LEVEL に関わらず INFO 以上を常に記録するため、再送の試行ログは GCS 側で必ず確認できる（`DEBUG` 指定時は DEBUG も記録） |
 
 `bin/deploy.sh` は `.env.stg` / `.env.prd` から上記を読み、`gcloud run jobs deploy --set-env-vars` に載せます（`EGPF_*` は設定されている変数だけ）。`--set-env-vars` はカンマ区切りのため、**値にカンマを含めないでください**。Webhook URL はシークレットとして扱い、コミットしないでください。
 

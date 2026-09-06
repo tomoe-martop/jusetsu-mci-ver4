@@ -55,7 +55,9 @@ fi
 
 # オプション環境変数の設定（Cloud SQL確認のため先に取得）
 MCI_MYSQL_TIMEZONE="${MCI_MYSQL_TIMEZONE:-Asia/Tokyo}"
-LOG_LEVEL="${LOG_LEVEL:-ERROR}"
+# LOG_LEVEL は標準出力（Cloud Logging）のレベル。EGPF の再送試行ログは INFO のため既定は INFO
+# （predictor.log／GCS 退避ログには LOG_LEVEL に関わらず INFO 以上が常に記録される）
+LOG_LEVEL="${LOG_LEVEL:-INFO}"
 USE_CLOUD_SQL="${USE_CLOUD_SQL:-false}"
 
 # 環境変数の確認

@@ -59,7 +59,7 @@ cp .env.prd.example .env.prd
 - `MCI_MYSQL_DATABASE` - データベース名
 - `MCI_MYSQL_TIMEZONE` - タイムゾーン（デフォルト: Asia/Tokyo）
 - `API_SHARED_PASSWORD` - Energy Gateway APIの共有パスワード
-- `LOG_LEVEL` - ログレベル（オプション、デフォルト: ERROR）
+- `LOG_LEVEL` - 標準出力（Cloud Logging）のログレベル（オプション、デフォルト: INFO。EGPF の再送試行ログは INFO のため ERROR にすると Cloud Logging に残らない。`predictor.log`／GCS 退避ログには LOG_LEVEL に関わらず INFO 以上が常に記録される）
 - `GCS_LOG_BUCKET` - Cloud Storageのログ保存先バケット名（オプション、設定しない場合はローカル保存）
 - `ENERGY_GATEWAY_API_URL` - Energy Gateway APIのURL（オプション、デフォルト: https://api.energy-gateway.jp/0.2/estimated_data）
 - `MOCK_API_URL` - モックAPIのURL（オプション、spid=9991の場合のみ使用）
@@ -184,14 +184,14 @@ gcloud run jobs deploy jusetsu-mci \
   --image gcr.io/$PROJECT_ID/jusetsu-mci \
   --region asia-northeast1 \
   --max-instances 1 \
-  --set-env-vars "MCI_MYSQL_USER=xxx,MCI_MYSQL_PASSWORD=xxx,MCI_MYSQL_HOST=xxx,MCI_MYSQL_DATABASE=xxx,MCI_MYSQL_TIMEZONE=Asia/Tokyo,API_SHARED_PASSWORD=xxx,LOG_LEVEL=ERROR"
+  --set-env-vars "MCI_MYSQL_USER=xxx,MCI_MYSQL_PASSWORD=xxx,MCI_MYSQL_HOST=xxx,MCI_MYSQL_DATABASE=xxx,MCI_MYSQL_TIMEZONE=Asia/Tokyo,API_SHARED_PASSWORD=xxx,LOG_LEVEL=INFO"
 
 # Cloud SQL使用する場合
 gcloud run jobs deploy jusetsu-mci \
   --image gcr.io/$PROJECT_ID/jusetsu-mci \
   --region asia-northeast1 \
   --max-instances 1 \
-  --set-env-vars "MCI_MYSQL_USER=xxx,MCI_MYSQL_PASSWORD=xxx,MCI_MYSQL_DATABASE=xxx,MCI_MYSQL_TIMEZONE=Asia/Tokyo,API_SHARED_PASSWORD=xxx,LOG_LEVEL=ERROR" \
+  --set-env-vars "MCI_MYSQL_USER=xxx,MCI_MYSQL_PASSWORD=xxx,MCI_MYSQL_DATABASE=xxx,MCI_MYSQL_TIMEZONE=Asia/Tokyo,API_SHARED_PASSWORD=xxx,LOG_LEVEL=INFO" \
   --set-cloudsql-instances "project-id:region:instance-name" \
   --update-env-vars "MCI_MYSQL_HOST=/cloudsql/project-id:region:instance-name"
 ```

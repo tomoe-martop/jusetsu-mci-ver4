@@ -181,25 +181,38 @@ def configure_logging():
     Cloud Logging では severity=ERROR 扱いになっていた。
     predictor.log への RotatingFileHandler は GCS 退避に使うので残し、それ以外のハンドラを
     標準出力（ERROR 以上は標準エラー出力）に付け替える。
+
+    LOG_LEVEL は標準出力／標準エラー出力のレベルにだけ効く。predictor.log（GCS 退避ログ）には
+    LOG_LEVEL に関わらず INFO 以上を常に記録する（要件#102「通信ログには再送を含め記録する」の
+    ため、EGPF の試行ログ INFO を落とさない。LOG_LEVEL=DEBUG のときは DEBUG も記録する）。
     """
-    log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
+    log_level_name = os.environ.get('LOG_LEVEL', 'INFO').upper()
+    log_level = logging.getLevelName(log_level_name)
+    invalid_level = not isinstance(log_level, int)
+    if invalid_level:
+        log_level = logging.INFO
+    file_level = min(logging.INFO, log_level)
     formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s')
     root = logging.getLogger()
 
     for handler in list(root.handlers):
         if isinstance(handler, logging.FileHandler):
-            continue  # predictor.log（RotatingFileHandler）は維持
+            handler.setLevel(file_level)  # predictor.log（RotatingFileHandler）は維持し、常に INFO 以上を記録
+            continue
         root.removeHandler(handler)
 
     stdout_handler = logging.StreamHandler(sys.stdout)
     stdout_handler.setFormatter(formatter)
+    stdout_handler.setLevel(log_level)
     stdout_handler.addFilter(lambda record: record.levelno < logging.ERROR)
     stderr_handler = logging.StreamHandler(sys.stderr)
     stderr_handler.setFormatter(formatter)
-    stderr_handler.setLevel(logging.ERROR)
+    stderr_handler.setLevel(max(logging.ERROR, log_level))
     root.addHandler(stdout_handler)
     root.addHandler(stderr_handler)
-    root.setLevel(log_level)
+    root.setLevel(file_level)
+    if invalid_level:
+        logging.getLogger(__name__).warning("LOG_LEVEL=%r is not a valid level. using INFO", log_level_name)
 
 
 def main():
