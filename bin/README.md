@@ -63,6 +63,11 @@ cp .env.prd.example .env.prd
 - `GCS_LOG_BUCKET` - Cloud Storageのログ保存先バケット名（オプション、設定しない場合はローカル保存）
 - `ENERGY_GATEWAY_API_URL` - Energy Gateway APIのURL（オプション、デフォルト: https://api.energy-gateway.jp/0.2/estimated_data）
 - `MOCK_API_URL` - モックAPIのURL（オプション、spid=9991の場合のみ使用）
+- `ERROR_NOTIFY_SLACK_WEBHOOK_URL` - エラー通知先の Slack Incoming Webhook URL（オプション。未設定なら通知しない）
+- `ERROR_NOTIFY_ENV_LABEL` - 通知の先頭に付く環境ラベル（オプション。既定: `ENV=prd` なら `本番`、それ以外は `STG`）
+- `EGPF_RETRY_MAX_ATTEMPTS` / `EGPF_RETRY_WAIT_SEC` / `EGPF_CONNECT_TIMEOUT_SEC` / `EGPF_READ_TIMEOUT_SEC` / `EGPF_ABORT_AFTER_CONSECUTIVE_FAILURES` - EGPF リトライ設定（オプション。設定した変数だけデプロイに載る。既定: 5回 / 2秒 / 10秒 / 30秒 / 3）
+
+**注意**: `--set-env-vars` はカンマ区切りのため、各値にカンマを含めないでください。
 
 **自動設定される環境変数**（deploy.shが自動的に設定）:
 - `GOOGLE_CLOUD_PROJECT` - GCPプロジェクトID（多重実行防止のチェックに使用）

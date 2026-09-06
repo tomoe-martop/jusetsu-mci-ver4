@@ -152,6 +152,30 @@ if [ -n "$MOCK_API_URL" ]; then
     echo -e "${GREEN}✓ Mock API URL (spid=9991用): $MOCK_API_URL${NC}"
 fi
 
+# エラー通知（Slack Incoming Webhook）。ERROR_NOTIFY_SLACK_WEBHOOK_URL 未設定なら通知は行われない（従来どおりの動作）
+# ERROR_NOTIFY_ENV_LABEL は通知の先頭に付く環境ラベル（既定: ENV=prd なら「本番」、それ以外は「STG」）
+# ※ --set-env-vars はカンマ区切りのため、値にカンマを含めないこと
+if [ "$ENV" = "prd" ]; then
+    ERROR_NOTIFY_ENV_LABEL="${ERROR_NOTIFY_ENV_LABEL:-本番}"
+else
+    ERROR_NOTIFY_ENV_LABEL="${ERROR_NOTIFY_ENV_LABEL:-STG}"
+fi
+ENV_VARS="$ENV_VARS,ERROR_NOTIFY_ENV_LABEL=$ERROR_NOTIFY_ENV_LABEL"
+if [ -n "$ERROR_NOTIFY_SLACK_WEBHOOK_URL" ]; then
+    ENV_VARS="$ENV_VARS,ERROR_NOTIFY_SLACK_WEBHOOK_URL=$ERROR_NOTIFY_SLACK_WEBHOOK_URL"
+    echo -e "${GREEN}✓ エラー通知: Slack Webhook 設定あり (ラベル: $ERROR_NOTIFY_ENV_LABEL)${NC}"
+else
+    echo -e "${YELLOW}⚠ ERROR_NOTIFY_SLACK_WEBHOOK_URL が未設定のため、エラー通知は無効です${NC}"
+fi
+
+# EGPF リトライ設定（設定されている変数だけ載せる。未設定時は main.py 側の既定値: 5回 / 2秒 / 接続10秒 / 読取30秒 / 連続3回で打ち切り）
+for VAR in EGPF_RETRY_MAX_ATTEMPTS EGPF_RETRY_WAIT_SEC EGPF_CONNECT_TIMEOUT_SEC EGPF_READ_TIMEOUT_SEC EGPF_ABORT_AFTER_CONSECUTIVE_FAILURES; do
+    if [ -n "${!VAR}" ]; then
+        ENV_VARS="$ENV_VARS,$VAR=${!VAR}"
+        echo -e "${GREEN}✓ $VAR=${!VAR}${NC}"
+    fi
+done
+
 # デプロイコマンドの構築
 # タイムアウト: 24時間（デフォルト10分、最大24時間）
 # 計算根拠: 30秒 × 2000件（ハウス） = 60,000秒 = 約16時間40分 + 余裕
