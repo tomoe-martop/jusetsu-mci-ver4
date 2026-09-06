@@ -5,7 +5,6 @@ import traceback
 import sys
 
 import mysql.connector
-import requests
 from datetime import datetime as dt, timedelta, timezone
 import csv
 from google.cloud import storage
@@ -23,6 +22,16 @@ import json
 base_dir = os.path.dirname(os.path.abspath(__file__))
 api_dir = os.path.join(base_dir, 'api')
 sys.path.insert(0, api_dir)
+
+# EGPF 連携共通モジュール（リトライ・打ち切り・通知・失敗分類）
+from egpf_common import (
+    egpf_get, EgpfRetryExhausted, ConsecutiveFailureGuard, notify_error,
+    classify_failure, describe_failure, format_task_summary,
+    TITLE_TASK_FAILED, TITLE_TASK_ABORTED, TITLE_UNEXPECTED, ACTION_RECREATE_TASK,
+)
+
+# 通知の先頭に付ける機能名（例: [MCI Ver4][本番] 月次予測 失敗あり）
+NOTIFY_SOURCE = "MCI Ver4"
 
 # PredictorWithLoggingをインポート
 try:
@@ -164,10 +173,38 @@ def is_another_execution_running():
         logger.warning(f"実行中チェックでエラーが発生しました: {e}")
         return False
 
+def configure_logging():
+    """ルートロガーのハンドラを組み直す。
+
+    api/pred_mci.py が import 時に logging.basicConfig(..., StreamHandler()) を実行するため、
+    従来は main() の basicConfig が無効化されて LOG_LEVEL が効かず、さらに全行が stderr に出て
+    Cloud Logging では severity=ERROR 扱いになっていた。
+    predictor.log への RotatingFileHandler は GCS 退避に使うので残し、それ以外のハンドラを
+    標準出力（ERROR 以上は標準エラー出力）に付け替える。
+    """
+    log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
+    formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s')
+    root = logging.getLogger()
+
+    for handler in list(root.handlers):
+        if isinstance(handler, logging.FileHandler):
+            continue  # predictor.log（RotatingFileHandler）は維持
+        root.removeHandler(handler)
+
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setFormatter(formatter)
+    stdout_handler.addFilter(lambda record: record.levelno < logging.ERROR)
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setFormatter(formatter)
+    stderr_handler.setLevel(logging.ERROR)
+    root.addHandler(stdout_handler)
+    root.addHandler(stderr_handler)
+    root.setLevel(log_level)
+
+
 def main():
+    configure_logging()
     logger = logging.getLogger(__name__)
-    LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
-    logging.basicConfig(level=LOG_LEVEL, format='%(asctime)s %(levelname)s %(message)s')
 
     logger.info("Start main.")
 
@@ -182,6 +219,10 @@ def main():
     api_url = os.environ.get('ENERGY_GATEWAY_API_URL', "https://api.energy-gateway.jp/0.2/estimated_data")
     # モックAPI URL（spid=9991の場合のみ使用）
     mock_api_url = os.environ.get('MOCK_API_URL')
+    # エラー通知（ERROR_NOTIFY_SLACK_WEBHOOK_URL 未設定なら notify_error は何もしない）
+    env_label = os.environ.get('ERROR_NOTIFY_ENV_LABEL')
+    jst = timezone(timedelta(hours=+9))
+    pending_notifications = []  # (title, summary): N1/N2 はログの GCS アップロード後にパスを添えて送る
     csv_header = ['date_time_jst', 'air_conditioner', 'clothes_washer', 'microwave', 'refrigerator', 'rice_cooker',
                   'TV', 'cleaner', 'IH', 'Heater']
     app_type_ids = [2, 5, 20, 24, 25, 30, 31, 37, 301]
@@ -234,6 +275,11 @@ def main():
 
         for (task_id, date_from, date_to) in tasks:
             should_upload_log = True  # タスク処理開始
+            task_started_at = dt.now(jst)
+            failures = []  # (houseid, 失敗分類, 詳細)
+            succeeded = 0
+            remaining = None  # EGPF 障害の疑いで打ち切った場合の未処理ハウス数
+            guard = ConsecutiveFailureGuard()
             try:
                 # タスク毎
                 logger.debug("Start task. task_id: %s", task_id)
@@ -251,7 +297,7 @@ def main():
 
                 logger.debug("get task_houses. count: %s", len(task_houses))
 
-                for (task_house_id, spid, houseid, age, sex, education, solo) in task_houses:
+                for house_index, (task_house_id, spid, houseid, age, sex, education, solo) in enumerate(task_houses):
                     status = 0
                     progress = 0
                     try:
@@ -296,8 +342,12 @@ def main():
                             else:
                                 url = api_url
 
-                            res = requests.get(url, headers=headers, params=params, timeout=30)
-                            res.raise_for_status()  # HTTPエラーの場合に例外を発生
+                            # リトライ付き GET（設計書 3 章）。2xx 以外は egpf_get が例外を送出する
+                            res = egpf_get(url, headers, params,
+                                           context={'spid': spid, 'house': houseid,
+                                                    'sts': params['sts'], 'ets': params['ets']},
+                                           logger=logger)
+                            guard.record_success()
                             # print(r.json()['data'][0]['timestamps'])
 
                             response_data = res.json()
@@ -418,11 +468,16 @@ def main():
                         status = 1
                         progress = 100
                         update_task_houses(cnx, cursor, task_house_id, status, progress)
+                        succeeded += 1
 
                     except Exception as e:
                         print(traceback.format_exc())
-                        # ハウス毎のエラー
-                        logger.warning(f"Warning Occurred. failed task_house. exception: %s", e)
+                        # ハウス毎のエラー（分類は設計書 4.5。ログ・通知にのみ使い DB には書かない）
+                        category = classify_failure(e)
+                        failures.append((houseid, category, describe_failure(e)))
+                        egpf_exhausted = isinstance(e, EgpfRetryExhausted)
+                        logger.warning(f"Warning Occurred. failed task_house. houseid: %s, category: %s, exception: %s",
+                                       houseid, category, e)
                         try:
                             status = -1
                             update_task_houses(cnx, cursor, task_house_id, status, progress)
@@ -434,13 +489,37 @@ def main():
                             cnx.commit()
                         except Exception as e:
                             logger.warning(f"Warning Occurred. failed update_task_houses. exception: %s", e)
+                        # EGPF 全断の疑い（設計書 3.5）: 連続でリトライ枯渇したらタスクを打ち切る。
+                        # 処理中のハウスは上で -1 確定済み。残りのハウスは未処理のまま（task_houses を触らない）
+                        if egpf_exhausted and guard.record_exhausted():
+                            remaining = len(task_houses) - house_index - 1
+                            break
                         continue
+
+                summary = dict(task_id=task_id, started_at=task_started_at, ended_at=dt.now(jst),
+                               total=len(task_houses), succeeded=succeeded, failures=failures)
+
+                if remaining is not None:
+                    # 打ち切り: tasks を失敗にして N2 通知。以降のタスクも処理しない
+                    logger.error("Aborting task. task_id: %s, consecutive EGPF retry exhaustion. remaining houses: %s",
+                                 task_id, remaining)
+                    sql = "UPDATE `tasks` SET end_at=NOW(), status=%s WHERE id = %s"
+                    param = (-1, task_id,)
+                    cursor.execute(sql, param)
+                    cnx.commit()
+                    summary['remaining'] = remaining
+                    pending_notifications.append((TITLE_TASK_ABORTED, summary))
+                    break
 
                 # task終了をDBに登録
                 sql = "UPDATE `tasks` SET end_at=NOW(), status=%s WHERE id = %s"
                 param = (1, task_id,)
                 cursor.execute(sql, param)
                 cnx.commit()
+
+                # N1: 失敗ハウスがあればタスク単位で通知する（0 件なら通知しない）
+                if failures:
+                    pending_notifications.append((TITLE_TASK_FAILED, summary))
 
             except (Exception,) as e:
                 # タスク毎のエラー
@@ -450,17 +529,30 @@ def main():
                 param = (-1, task_id,)
                 cursor.execute(sql, param)
                 cnx.commit()
+                # N3: タスク単位の例外
+                notify_error(TITLE_UNEXPECTED, [f"task_id: {task_id}", f"例外: {describe_failure(e)}"],
+                             env_label=env_label, logger=logger, source=NOTIFY_SOURCE)
                 break
 
             logger.debug(f"Completed task. task_id: %s", task_id)
 
         # predictor.logをCloud Storageにアップロード
-        upload_log_to_gcs(task_id)
+        log_path = upload_log_to_gcs(task_id)
+        should_upload_log = False  # finally での二重アップロードを防ぐ
+
+        # N1/N2: ログのパスを添えてタスク単位の通知を送る
+        for (title, summary) in pending_notifications:
+            lines = format_task_summary(log_path=log_path, action=ACTION_RECREATE_TASK, **summary)
+            notify_error(title, lines, env_label=env_label, logger=logger, source=NOTIFY_SOURCE)
+        pending_notifications = []
 
         logger.info("Completed main.")
 
     except (Exception,) as e:
         logger.error("Error Occurred. exception: %s", e)
+        # N3: 最外殻の例外（DB 接続失敗等）。通知後は従来どおり exit(1)
+        notify_error(TITLE_UNEXPECTED, [f"例外: {describe_failure(e)}", "処理を中断しました（exit 1）"],
+                     env_label=env_label, logger=logger, source=NOTIFY_SOURCE)
         exit(1)
     finally:
         # タスク処理が行われた場合のみログをアップロード
@@ -479,7 +571,10 @@ def update_task_houses(cnx, cursor, p_task_house_id, p_status, p_progress):
 
 
 def upload_log_to_gcs(task_id=None):
-    """predictor.logをCloud Storageにアップロード（エラー時も実行）"""
+    """predictor.logをCloud Storageにアップロード（エラー時も実行）
+
+    戻り値: 退避先のパス（gs://... またはローカルの保存先）。退避できなかった場合は None
+    """
     logger = logging.getLogger(__name__)
 
     # pred_mci.pyはカレントディレクトリにログを作成するため、両方の場所を確認
@@ -496,7 +591,7 @@ def upload_log_to_gcs(task_id=None):
             break
 
     if not predictor_log_path:
-        return
+        return None
 
     try:
         gcs_bucket_name = os.environ.get('GCS_LOG_BUCKET')
@@ -512,6 +607,7 @@ def upload_log_to_gcs(task_id=None):
             logger.info(f"Log file uploaded to gs://{gcs_bucket_name}/{log_filename}")
             # アップロード後、ローカルファイルを削除
             os.remove(predictor_log_path)
+            return f"gs://{gcs_bucket_name}/{log_filename}"
         else:
             # GCS_LOG_BUCKETが設定されていない場合は、従来通りローカルに保存
             logger.warning("GCS_LOG_BUCKET is not set. Saving log locally.")
@@ -519,6 +615,7 @@ def upload_log_to_gcs(task_id=None):
             log_filename = f"predictor_{task_id_str}_{dt.now().strftime('%Y%m%d%H%M%S')}.log"
             new_log_path = os.path.join(base_dir, 'log', log_filename)
             os.rename(predictor_log_path, new_log_path)
+            return new_log_path
     except Exception as e:
         logger.warning(f"Failed to upload log to GCS: {e}. Saving locally.")
         try:
@@ -527,8 +624,10 @@ def upload_log_to_gcs(task_id=None):
             log_filename = f"predictor_{task_id_str}_{dt.now().strftime('%Y%m%d%H%M%S')}.log"
             new_log_path = os.path.join(base_dir, 'log', log_filename)
             os.rename(predictor_log_path, new_log_path)
+            return new_log_path
         except Exception:
             pass
+    return None
 
 
 def api_main(args):
