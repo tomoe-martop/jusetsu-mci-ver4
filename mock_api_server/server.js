@@ -37,6 +37,35 @@ if (useDatabase) {
   dbPool = mysql.createPool(poolConfig);
 }
 
+// === 障害注入（STG 試験用。EGPF 障害を疑似的に再現する） ===
+// MOCK_FAIL_STATUS: 設定時、GET /0.2/estimated_data をこの HTTP ステータスで失敗させる（例: 503）。未設定なら無効
+// MOCK_FAIL_COUNT : 最初の N リクエストだけ失敗させる。0 または未設定なら常時失敗
+// MOCK_DELAY_MS   : 応答前に待つミリ秒（read timeout の再現用。失敗注入と併用可）
+const MOCK_FAIL_STATUS = parseInt(process.env.MOCK_FAIL_STATUS || '0', 10);
+const MOCK_FAIL_COUNT = parseInt(process.env.MOCK_FAIL_COUNT || '0', 10);
+const MOCK_DELAY_MS = parseInt(process.env.MOCK_DELAY_MS || '0', 10);
+let injectedFailureCount = 0; // プロセス（Cloud Run インスタンス）単位のカウンタ
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// 障害注入の判定。失敗させる場合はレスポンスを返して true、通常処理に進む場合は false
+async function applyFaultInjection(res) {
+  if (MOCK_DELAY_MS > 0) {
+    console.log(`Fault injection: delaying response by ${MOCK_DELAY_MS}ms`);
+    await sleep(MOCK_DELAY_MS);
+  }
+  if (MOCK_FAIL_STATUS > 0 && (MOCK_FAIL_COUNT <= 0 || injectedFailureCount < MOCK_FAIL_COUNT)) {
+    injectedFailureCount += 1;
+    const progress = MOCK_FAIL_COUNT > 0 ? `${injectedFailureCount}/${MOCK_FAIL_COUNT}` : `${injectedFailureCount} (always)`;
+    console.log(`Fault injection: returning HTTP ${MOCK_FAIL_STATUS} [${progress}]`);
+    res.status(MOCK_FAIL_STATUS).json({ error: 'Injected failure', status: MOCK_FAIL_STATUS });
+    return true;
+  }
+  return false;
+}
+
 // CSVデータのメモリキャッシュ（CSV使用時のみ）
 const csvCache = new Map();
 
@@ -193,6 +222,11 @@ app.get('/0.2/estimated_data', async (req, res) => {
 
     console.log(`Request: spid=${service_provider}, house=${house}, sts=${sts}, ets=${ets}, time_units=${time_units}`);
 
+    // 障害注入（MOCK_FAIL_STATUS / MOCK_FAIL_COUNT / MOCK_DELAY_MS）。未設定なら何もしない
+    if (await applyFaultInjection(res)) {
+      return;
+    }
+
     if (!service_provider || !house || !sts || !ets) {
       return res.status(400).json({ error: 'Missing required parameters' });
     }
@@ -242,6 +276,14 @@ app.get('/0.2/estimated_data', async (req, res) => {
 app.get('/health', async (req, res) => {
   const status = { status: 'ok', mode: useDatabase ? 'database' : 'csv' };
 
+  // 障害注入の現在設定（試験時の確認用）
+  status.faultInjection = {
+    failStatus: MOCK_FAIL_STATUS || null,
+    failCount: MOCK_FAIL_COUNT || null,
+    delayMs: MOCK_DELAY_MS || null,
+    injectedFailureCount
+  };
+
   if (useDatabase && dbPool) {
     try {
       await dbPool.execute('SELECT 1');
@@ -259,6 +301,9 @@ app.get('/health', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Mock API server running on http://localhost:${PORT}`);
   console.log(`Mode: ${useDatabase ? 'Database' : 'CSV files'}`);
+  if (MOCK_FAIL_STATUS > 0 || MOCK_DELAY_MS > 0) {
+    console.log(`Fault injection: status=${MOCK_FAIL_STATUS || '-'} count=${MOCK_FAIL_COUNT || 'always'} delayMs=${MOCK_DELAY_MS || '-'}`);
+  }
   console.log(`Endpoint: http://localhost:${PORT}/0.2/estimated_data`);
   console.log(`Example: http://localhost:${PORT}/0.2/estimated_data?service_provider=9991&house=2025080001&sts=1718294400&ets=1718380800&time_units=20`);
 });

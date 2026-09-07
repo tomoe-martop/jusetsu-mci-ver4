@@ -40,5 +40,8 @@ README.md
 main.sh
 main2.py
 
+# 単体テスト（イメージには不要）
+tests/
+
 # モックAPIサーバー（別途デプロイされるため除外）
 mock_api_server/
