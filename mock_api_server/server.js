@@ -37,6 +37,35 @@ if (useDatabase) {
   dbPool = mysql.createPool(poolConfig);
 }
 
+// === 障害注入（STG 試験用。EGPF 障害を疑似的に再現する） ===
+// MOCK_FAIL_STATUS: 設定時、/0.2/ 配下の全エンドポイントをこの HTTP ステータスで失敗させる（例: 503）。未設定なら無効
+// MOCK_FAIL_COUNT : 最初の N リクエストだけ失敗させる。0 または未設定なら常時失敗
+// MOCK_DELAY_MS   : 応答前に待つミリ秒（read timeout の再現用。失敗注入と併用可）
+const MOCK_FAIL_STATUS = parseInt(process.env.MOCK_FAIL_STATUS || '0', 10);
+const MOCK_FAIL_COUNT = parseInt(process.env.MOCK_FAIL_COUNT || '0', 10);
+const MOCK_DELAY_MS = parseInt(process.env.MOCK_DELAY_MS || '0', 10);
+let injectedFailureCount = 0; // プロセス（Cloud Run インスタンス）単位のカウンタ
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// 障害注入の判定。失敗させる場合はレスポンスを返して true、通常処理に進む場合は false
+async function applyFaultInjection(res) {
+  if (MOCK_DELAY_MS > 0) {
+    console.log(`Fault injection: delaying response by ${MOCK_DELAY_MS}ms`);
+    await sleep(MOCK_DELAY_MS);
+  }
+  if (MOCK_FAIL_STATUS > 0 && (MOCK_FAIL_COUNT <= 0 || injectedFailureCount < MOCK_FAIL_COUNT)) {
+    injectedFailureCount += 1;
+    const progress = MOCK_FAIL_COUNT > 0 ? `${injectedFailureCount}/${MOCK_FAIL_COUNT}` : `${injectedFailureCount} (always)`;
+    console.log(`Fault injection: returning HTTP ${MOCK_FAIL_STATUS} [${progress}]`);
+    res.status(MOCK_FAIL_STATUS).json({ error: 'Injected failure', status: MOCK_FAIL_STATUS });
+    return true;
+  }
+  return false;
+}
+
 // CSVデータのメモリキャッシュ（CSV使用時のみ）
 const csvCache = new Map();
 
@@ -186,6 +215,15 @@ function convertCSVToAPIResponse(csvData, sts, ets) {
 
 // === APIエンドポイント ===
 
+// 障害注入は /0.2/ 配下の全エンドポイントに効かせる（見える化CSV は estimated_data 以外も呼ぶ）。
+// 未設定なら何もせず通常処理に進む。
+app.use('/0.2', async (req, res, next) => {
+  if (await applyFaultInjection(res)) {
+    return;
+  }
+  next();
+});
+
 app.get('/0.2/estimated_data', async (req, res) => {
   try {
     const { service_provider, house, sts, ets, time_units } = req.query;
@@ -238,9 +276,79 @@ app.get('/0.2/estimated_data', async (req, res) => {
   }
 });
 
+// === 見える化CSV（jusetsu-csv-function）向けエンドポイント ===
+// 見える化CSV は estimated_data 以外に calculated_data / observed_data も呼ぶ。
+// STG 試験（設計書 7.2 の S1/S6）では障害注入が目的なので、正常応答は固定データで足りる。
+
+// time_units（20:分, 30:時, 40:日, 50:月, 60:年）を秒数に変換する
+const TIME_UNIT_SECONDS = { '20': 60, '30': 3600, '40': 86400, '50': 86400 * 30, '60': 86400 * 365 };
+const MAX_TIMESTAMPS = 2000; // 応答が肥大しないよう上限を設ける
+
+function buildTimestamps(sts, ets, timeUnits) {
+  const step = TIME_UNIT_SECONDS[String(timeUnits)] || 3600;
+  const start = parseInt(sts, 10);
+  const end = parseInt(ets, 10);
+  const timestamps = [];
+  for (let t = start; t < end && timestamps.length < MAX_TIMESTAMPS; t += step) {
+    timestamps.push(t);
+  }
+  return timestamps;
+}
+
+// 固定の擬似電力値（決定的に生成。単位は W）
+function buildPowers(timestamps, seed) {
+  return timestamps.map((_, i) => Math.round((100 + seed * 10 + (i % 12) * 5) * 1000) / 1000);
+}
+
+// 計算値の appliance_id（1:発電量 2:充電量 3:買電量 4:総消費電力 5:自家消費量 8:放電量 9:売電量）
+const MOCK_CALCULATED_APPLIANCE_IDS = (process.env.MOCK_CALCULATED_APPLIANCE_IDS || '1,2,3,4,5,8,9')
+  .split(',').map(v => parseInt(v.trim(), 10)).filter(v => !isNaN(v));
+
+app.get('/0.2/calculated_data', (req, res) => {
+  const { service_provider, house, sts, ets, time_units } = req.query;
+  console.log(`Request(calculated_data): spid=${service_provider}, house=${house}, sts=${sts}, ets=${ets}, time_units=${time_units}`);
+
+  if (!service_provider || !house || !sts || !ets) {
+    return res.status(400).json({ error: 'Missing required parameters' });
+  }
+
+  const timestamps = buildTimestamps(sts, ets, time_units);
+  const appliances = MOCK_CALCULATED_APPLIANCE_IDS.map(id => ({
+    appliance_id: id,
+    powers: buildPowers(timestamps, id)
+  }));
+
+  res.json({ data: [{ timestamps, appliance_types: [{ appliance_type_id: 1, appliances }] }] });
+});
+
+app.get('/0.2/observed_data', (req, res) => {
+  const { service_provider, house, sts, ets, time_units } = req.query;
+  console.log(`Request(observed_data): spid=${service_provider}, house=${house}, sts=${sts}, ets=${ets}, time_units=${time_units}`);
+
+  if (!service_provider || !house || !sts || !ets) {
+    return res.status(400).json({ error: 'Missing required parameters' });
+  }
+
+  const timestamps = buildTimestamps(sts, ets, time_units);
+  const applianceTypes = Object.values(APPLIANCE_TYPE_MAP).map(typeId => ({
+    appliance_type_id: typeId,
+    appliances: [{ appliance_id: 1, powers: buildPowers(timestamps, typeId % 17) }]
+  }));
+
+  res.json({ data: [{ timestamps, appliance_types: applianceTypes }] });
+});
+
 // ヘルスチェック
 app.get('/health', async (req, res) => {
   const status = { status: 'ok', mode: useDatabase ? 'database' : 'csv' };
+
+  // 障害注入の現在設定（試験時の確認用）
+  status.faultInjection = {
+    failStatus: MOCK_FAIL_STATUS || null,
+    failCount: MOCK_FAIL_COUNT || null,
+    delayMs: MOCK_DELAY_MS || null,
+    injectedFailureCount
+  };
 
   if (useDatabase && dbPool) {
     try {
@@ -259,6 +367,9 @@ app.get('/health', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Mock API server running on http://localhost:${PORT}`);
   console.log(`Mode: ${useDatabase ? 'Database' : 'CSV files'}`);
-  console.log(`Endpoint: http://localhost:${PORT}/0.2/estimated_data`);
+  if (MOCK_FAIL_STATUS > 0 || MOCK_DELAY_MS > 0) {
+    console.log(`Fault injection: status=${MOCK_FAIL_STATUS || '-'} count=${MOCK_FAIL_COUNT || 'always'} delayMs=${MOCK_DELAY_MS || '-'}`);
+  }
+  console.log(`Endpoints: http://localhost:${PORT}/0.2/{estimated_data,calculated_data,observed_data}`);
   console.log(`Example: http://localhost:${PORT}/0.2/estimated_data?service_provider=9991&house=2025080001&sts=1718294400&ets=1718380800&time_units=20`);
 });

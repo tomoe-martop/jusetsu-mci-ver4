@@ -34,3 +34,6 @@ ENV/
 .env.*.local
 .env.stg
 .env.prd
+
+# pytest
+.pytest_cache/
