@@ -31,7 +31,9 @@ npm run dev
 ### エンドポイント
 
 ```
-GET http://localhost:3000/0.2/estimated_data
+GET http://localhost:3000/0.2/estimated_data     # MCI Ver3/Ver4 が使用（CSV/DB のデータを返す）
+GET http://localhost:3000/0.2/calculated_data    # 見える化CSV が使用（固定データ。下記参照）
+GET http://localhost:3000/0.2/observed_data      # 見える化CSV が使用（固定データ。下記参照）
 ```
 
 ### クエリパラメータ
@@ -133,9 +135,23 @@ print(response.json())
 | 37 | IH | IH |
 | 301 | ヒーター | Heater |
 
+## 見える化CSV 向けエンドポイント（calculated_data / observed_data）
+
+見える化CSV（`jusetsu-csv-function`）は `estimated_data` 以外に計算値（`calculated_data`）と実測値（`observed_data`）も呼びます。STG 試験（設計書 7.2 の S1/S6）は障害注入が目的なので、この2本は**固定の擬似データ**を返します（CSV/DB は参照しません）。
+
+- `service_provider` は値を検証しません（`estimated_data` の 9991 固定チェックは適用されません）。STG の事業者IDをそのまま指定できます
+- `timestamps` は `sts` / `ets` / `time_units`（20:分 30:時 40:日 50:月 60:年）から生成します。最大 2000 点で打ち切ります
+- `calculated_data` が返す `appliance_id` は既定で `1,2,3,4,5,8,9`（発電量・充電量・買電量・総消費電力・自家消費量・放電量・売電量）。`MOCK_CALCULATED_APPLIANCE_IDS` で変更できます
+- `observed_data` は上記「家電タイプID」の全タイプについて `appliance_id=1` の系列を1本返します
+- `upload_ratio` / `voltage_data` は未実装です。これらを使う出力条件（電圧・通信率）は試験対象外にしてください
+
+```bash
+curl "http://localhost:3000/0.2/calculated_data?service_provider=1234&house=H1&sts=1718294400&ets=1718305200&time_units=30"
+```
+
 ## 障害注入（STG 試験用）
 
-EGPF 障害を疑似的に再現するため、`GET /0.2/estimated_data` に環境変数で失敗・遅延を注入できます。未設定なら通常どおり応答します。
+EGPF 障害を疑似的に再現するため、`/0.2/` 配下の**全エンドポイント**（`estimated_data` / `calculated_data` / `observed_data`）に環境変数で失敗・遅延を注入できます。未設定なら通常どおり応答します。
 
 | 環境変数 | 説明 | 例 |
 |---|---|---|
@@ -143,7 +159,7 @@ EGPF 障害を疑似的に再現するため、`GET /0.2/estimated_data` に環�
 | `MOCK_FAIL_COUNT` | 最初の N リクエストだけ失敗させる。0 または未設定なら常時失敗 | `2` |
 | `MOCK_DELAY_MS` | 応答前に待つミリ秒（read timeout の再現用。失敗注入と併用可） | `40000` |
 
-- 失敗回数のカウンタは **プロセス（Cloud Run のインスタンス）単位** です。Cloud Run で `MOCK_FAIL_COUNT` を使う場合はインスタンスが複数立たないよう `--max-instances 1` にするか、常時失敗（`MOCK_FAIL_COUNT` 未設定）で試験してください
+- 失敗回数のカウンタは **プロセス（Cloud Run のインスタンス）単位**、かつ **エンドポイント横断で共通** です（`MOCK_FAIL_COUNT=2` なら最初の2リクエストが、どのエンドポイントでも失敗します）。Cloud Run で `MOCK_FAIL_COUNT` を使う場合はインスタンスが複数立たないよう `--max-instances 1` にするか、常時失敗（`MOCK_FAIL_COUNT` 未設定）で試験してください
 - 現在の設定と注入回数は `GET /health` の `faultInjection` で確認できます
 
 ローカルでの例:
