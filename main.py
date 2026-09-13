@@ -235,7 +235,7 @@ def main():
     # エラー通知（ERROR_NOTIFY_SLACK_WEBHOOK_URL 未設定なら notify_error は何もしない）
     env_label = os.environ.get('ERROR_NOTIFY_ENV_LABEL')
     jst = timezone(timedelta(hours=+9))
-    pending_notifications = []  # (title, summary): N1/N2 はログの GCS アップロード後にパスを添えて送る
+    pending_notifications = []  # (title, summary): N1/N2 はログの GCS アップロード後に送る
     processed_task_count = 0
     task_id = None
     csv_header = ['date_time_jst', 'air_conditioner', 'clothes_washer', 'microwave', 'refrigerator', 'rice_cooker',
@@ -551,7 +551,7 @@ def main():
                 cursor.execute(sql, param)
                 cnx.commit()
                 # N3: タスク単位の例外
-                notify_error(TITLE_UNEXPECTED, [f"task_id: {task_id}", f"例外: {describe_failure(e)}"],
+                notify_error(TITLE_UNEXPECTED, [f"task_id: {task_id}", f"エラー内容: {describe_failure(e)}"],
                              env_label=env_label, logger=logger, source=NOTIFY_SOURCE)
                 break
 
@@ -559,12 +559,13 @@ def main():
 
         # predictor.logをCloud Storageにアップロード
         log_task_id = task_id if processed_task_count == 1 else None
-        log_path = upload_log_to_gcs(log_task_id)
+        upload_log_to_gcs(log_task_id)
         should_upload_log = False  # finally での二重アップロードを防ぐ
 
-        # N1/N2: ログのパスを添えてタスク単位の通知を送る
+        # N1/N2: タスク単位の通知を送る。通知はお客様も読むため GCS のログパスは載せない
+        # （ログは task_id を含むファイル名で gs://<GCS_LOG_BUCKET>/logs/ から引ける）
         for (title, summary) in pending_notifications:
-            lines = format_task_summary(log_path=log_path, action=ACTION_RECREATE_TASK, **summary)
+            lines = format_task_summary(action=ACTION_RECREATE_TASK, **summary)
             notify_error(title, lines, env_label=env_label, logger=logger, source=NOTIFY_SOURCE)
         pending_notifications = []
 
@@ -572,7 +573,7 @@ def main():
 
     except (Exception,) as e:
         logger.error("Error Occurred. exception: %s", e)
-        # 保留中の N1/N2（ログ退避前に最外殻へ抜けた場合）はログパス無しで先に送る。送信失敗は無視して N3 へ進む
+        # 保留中の N1/N2（ログ退避前に最外殻へ抜けた場合）は先に送る。送信失敗は無視して N3 へ進む
         for (title, summary) in pending_notifications:
             try:
                 notify_error(title, format_task_summary(action=ACTION_RECREATE_TASK, **summary),
@@ -581,7 +582,7 @@ def main():
                 logger.warning("Failed to send pending notification (%s): %s", title, notify_exc)
         pending_notifications = []
         # N3: 最外殻の例外（DB 接続失敗等）。通知後は従来どおり exit(1)
-        notify_error(TITLE_UNEXPECTED, [f"例外: {describe_failure(e)}", "処理を中断しました（exit 1）"],
+        notify_error(TITLE_UNEXPECTED, [f"エラー内容: {describe_failure(e)}", "処理を中断しました"],
                      env_label=env_label, logger=logger, source=NOTIFY_SOURCE)
         exit(1)
     finally:

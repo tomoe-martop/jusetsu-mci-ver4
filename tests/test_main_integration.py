@@ -226,7 +226,7 @@ def _log_blob_names(storage):
 # N1: タスク完了時に失敗ハウスあり
 # ---------------------------------------------------------------------------
 class TestN1TaskFailed:
-    def test_notifies_failed_houses_with_category_and_log_path(self, env):
+    def test_notifies_failed_houses_without_log_path(self, env):
         cursor = FakeCursor([(433,) + DAY], {433: [_house(1, "H1"), _house(2, "H2"), _house(3, "H3")]})
         events = []
 
@@ -246,7 +246,7 @@ class TestN1TaskFailed:
         assert text.startswith("[MCI Ver4][STG] 月次予測 失敗あり\ntask_id: 433　実行: ")
         assert "対象 3件 / 成功 2 / 失敗 1" in text
         assert "失敗ハウス:\n - H2: EGPF通信エラー（5回送信して失敗: HTTP 503）\n" in text
-        assert "ログ: gs://%s/logs/predictor_0000000433_" % GCS_BUCKET in text
+        assert "ログ:" not in text and "gs://" not in text  # お客様向けの通知なのでログのパスは載せない
         assert text.endswith("対応: ダッシュボード「頭の安心チェック」から再実行タスクを作成してください")
         # ログの GCS アップロードは 1 回だけで、通知はその後に送られる
         assert len(_log_blob_names(main.storage)) == 1
@@ -358,7 +358,7 @@ class TestN2Abort:
         assert "対象 5件 / 成功 0 / 失敗 3 / 未処理 2" in text
         assert "EGPF への連続失敗によりタスクを打ち切りました（残り 2件は未処理。復旧後に再実行が必要）" in text
         assert " - H3: EGPF通信エラー（5回送信して失敗: HTTP 503）" in text
-        assert "ログ: gs://%s/logs/predictor_0000000500_" % GCS_BUCKET in text
+        assert "ログ:" not in text and "gs://" not in text
         assert "対応: ダッシュボード「頭の安心チェック」から再実行タスクを作成してください" in text
         assert [e[0] for e in events] == ["blob", "post"]
         assert len(_log_blob_names(main.storage)) == 1
@@ -398,7 +398,7 @@ class TestN2Abort:
         assert "対象 3件 / 成功 0 / 失敗 3" in text
         assert "未処理" not in text and "打ち切り" not in text
         assert " - H3: EGPF通信エラー（5回送信して失敗: HTTP 503）" in text
-        assert "ログ: gs://%s/logs/predictor_unknown_" % GCS_BUCKET in text  # 複数タスク実行では共有ログのため task_id を埋めない
+        assert "ログ:" not in text and "gs://" not in text
         # X1 の CSV → ログ退避 → N1 の順（通知はログ退避後）
         assert [e[0] for e in events] == ["blob", "blob", "post"]
         assert events[1][1].startswith("logs/predictor_unknown_")
@@ -550,7 +550,7 @@ class TestN3Unexpected:
         get.assert_not_called()
         assert post.call_count == 1
         assert post.call_args.kwargs["json"] == {
-            "text": "[MCI Ver4][STG] 予期しないエラー\n例外: RuntimeError: db unreachable\n処理を中断しました（exit 1）",
+            "text": "[MCI Ver4][STG] 予期しないエラー\nエラー内容: RuntimeError: db unreachable\n処理を中断しました",
         }
         assert post.call_args.kwargs["timeout"] == 10.0
         main.storage.Client.assert_not_called()  # タスク処理前なのでログ退避もしない
@@ -579,7 +579,7 @@ class TestN3Unexpected:
         assert cursor.task_ends() == [(-1, 902)]
         assert post.call_count == 1
         assert post.call_args.kwargs["json"]["text"] == (
-            "[MCI Ver4][STG] 予期しないエラー\ntask_id: 902\n例外: RuntimeError: select failed")
+            "[MCI Ver4][STG] 予期しないエラー\ntask_id: 902\nエラー内容: RuntimeError: select failed")
         assert len(_log_blob_names(main.storage)) == 1  # 例外後もログは退避する
 
     def test_task_level_exception_does_not_lose_pending_n1(self, env):
@@ -598,7 +598,7 @@ class TestN3Unexpected:
         assert post.call_count == 2
         assert _text(post, 0).startswith("[MCI Ver4][STG] 予期しないエラー\ntask_id: 905\n")
         assert _text(post, 1).startswith("[MCI Ver4][STG] 月次予測 失敗あり\ntask_id: 904　")
-        assert "ログ: gs://" in _text(post, 1)
+        assert "ログ:" not in _text(post, 1)
         assert [e[0] for e in events] == ["post", "blob", "post"]
 
     @pytest.mark.parametrize("post_status", [200, 500])
@@ -628,7 +628,7 @@ class TestN3Unexpected:
         assert "ログ:" not in n1
         assert n1.endswith("対応: ダッシュボード「頭の安心チェック」から再実行タスクを作成してください")
         assert _text(post, 1) == (
-            "[MCI Ver4][STG] 予期しないエラー\n例外: RuntimeError: db connection lost\n処理を中断しました（exit 1）")
+            "[MCI Ver4][STG] 予期しないエラー\nエラー内容: RuntimeError: db connection lost\n処理を中断しました")
         assert [e[0] for e in events] == ["post", "post", "blob"]
         assert events[2][1].startswith("logs/predictor_unknown_")
 
@@ -805,7 +805,7 @@ class TestLoggingAndLogUpload:
         main.storage.Client.assert_not_called()
         saved = list((env.tmp_path / "log").glob("predictor_0000000905_*.log"))
         assert len(saved) == 1
-        assert "ログ: %s" % saved[0] in _text(post)
+        assert "ログ:" not in _text(post) and str(saved[0]) not in _text(post)  # ローカル退避しても通知にはパスを載せない
 
     def test_stale_csv_files_are_removed_at_start(self, env):
         # 起動時に前回実行の CSV を消してから、今回のハウス分を書き出す
