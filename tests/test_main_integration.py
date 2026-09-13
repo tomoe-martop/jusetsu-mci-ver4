@@ -226,7 +226,7 @@ def _log_blob_names(storage):
 # N1: タスク完了時に失敗ハウスあり
 # ---------------------------------------------------------------------------
 class TestN1TaskFailed:
-    def test_notifies_failed_houses_with_category_and_log_path(self, env):
+    def test_notifies_failed_houses_without_log_path(self, env):
         cursor = FakeCursor([(433,) + DAY], {433: [_house(1, "H1"), _house(2, "H2"), _house(3, "H3")]})
         events = []
 

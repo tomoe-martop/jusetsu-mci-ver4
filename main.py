@@ -235,7 +235,7 @@ def main():
     # エラー通知（ERROR_NOTIFY_SLACK_WEBHOOK_URL 未設定なら notify_error は何もしない）
     env_label = os.environ.get('ERROR_NOTIFY_ENV_LABEL')
     jst = timezone(timedelta(hours=+9))
-    pending_notifications = []  # (title, summary): N1/N2 はログの GCS アップロード後にパスを添えて送る
+    pending_notifications = []  # (title, summary): N1/N2 はログの GCS アップロード後に送る
     processed_task_count = 0
     task_id = None
     csv_header = ['date_time_jst', 'air_conditioner', 'clothes_washer', 'microwave', 'refrigerator', 'rice_cooker',
