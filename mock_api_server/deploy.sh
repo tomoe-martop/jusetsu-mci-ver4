@@ -36,19 +36,7 @@ echo -e "${GREEN}✓ サービス名: $SERVICE_NAME${NC}"
 echo -e "${GREEN}✓ リージョン: $REGION${NC}"
 echo -e "${GREEN}✓ イメージ: $IMAGE_NAME${NC}\n"
 
-# ステップ1: ローカルでDockerイメージをビルド
-echo -e "${YELLOW}ステップ1: Dockerイメージをローカルでビルドしています...${NC}"
-docker build --platform linux/amd64 -t $IMAGE_NAME .
-
-echo -e "${GREEN}✓ イメージのビルドが完了しました${NC}\n"
-
-# ステップ2: Container Registryにプッシュ
-echo -e "${YELLOW}ステップ2: Container Registryにプッシュしています...${NC}"
-docker push $IMAGE_NAME
-
-echo -e "${GREEN}✓ イメージのプッシュが完了しました${NC}\n"
-
-# .env.stgから環境変数を読み込み
+# .env.stgから環境変数を読み込み（ビルドに時間をかける前に検証する）
 ENV_FILE="$(dirname "$SCRIPT_DIR")/.env.stg"
 if [ -f "$ENV_FILE" ]; then
     echo -e "${GREEN}✓ .env.stgを読み込みます${NC}"
@@ -66,8 +54,18 @@ if [ -z "$CLOUD_SQL_INSTANCE" ]; then
     exit 1
 fi
 
-# ステップ3: Cloud Runにデプロイ
-echo -e "${YELLOW}ステップ3: Cloud Runにデプロイしています...${NC}"
+# ステップ1: Cloud Build でイメージをビルド＆プッシュ
+# ローカルの docker build は Mac(arm64) から amd64 を作るため --platform 指定が必要で、
+# Docker Desktop が不調だとビルドが進まない（2026-09-13 に buildkit が落ちて失敗）。
+# ver4 本体の bin/deploy.sh と同じ Cloud Build 方式に寄せる（Cloud Build の既定は linux/amd64）。
+# ビルドコンテキストから除外するものは .gcloudignore で管理する（node_modules 等）。
+echo -e "${YELLOW}ステップ1: Cloud Build でイメージをビルドしています...${NC}"
+gcloud builds submit --tag "$IMAGE_NAME" .
+
+echo -e "${GREEN}✓ イメージのビルドとプッシュが完了しました${NC}\n"
+
+# ステップ2: Cloud Runにデプロイ
+echo -e "${YELLOW}ステップ2: Cloud Runにデプロイしています...${NC}"
 
 gcloud run deploy $SERVICE_NAME \
   --image $IMAGE_NAME \
