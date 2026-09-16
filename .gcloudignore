@@ -45,3 +45,9 @@ tests/
 
 # モックAPIサーバー（別途デプロイされるため除外）
 mock_api_server/
+
+# 環境変数ファイル（.env.prd / .env.stg は DB パスワード・API パスワード・Slack Webhook を含む）
+# gcloud builds submit のソースと、Dockerfile の COPY . . でイメージに入らないようにする。
+# deploy.sh は .env.<ENV> を読んで --set-env-vars でジョブに渡すため、イメージ内には不要
+.env
+.env.*
