@@ -143,6 +143,8 @@ task_id: 433　実行: 2026-08-02 00:00〜00:47
 | `EGPF_CONNECT_TIMEOUT_SEC` | 10 | 接続タイムアウト（秒） |
 | `EGPF_READ_TIMEOUT_SEC` | 30 | 読み取りタイムアウト（秒） |
 | `EGPF_ABORT_AFTER_CONSECUTIVE_FAILURES` | 3 | 連続リトライ枯渇の打ち切り閾値（0 で無効） |
+| `MCI_MYSQL_CONNECT_ATTEMPTS` | 3 | MySQL 接続の最大試行回数。起動直後の一時的な接続失敗（Cloud SQL への `i/o timeout`）で N3 を出さないため、失敗したら再試行し、すべて失敗したら N3 |
+| `MCI_MYSQL_CONNECT_RETRY_WAIT_SEC` | 2 | MySQL 接続の再試行間隔（秒、固定） |
 | `ERROR_NOTIFY_SLACK_WEBHOOK_URL` | （未設定） | Slack Incoming Webhook URL。未設定なら通知しない |
 | `ERROR_NOTIFY_ENV_LABEL` | deploy.sh が `本番`（`ENV=prd`）／`STG` を設定 | 通知の先頭に付く環境ラベル |
 | `LOG_LEVEL` | INFO（main.py・deploy.sh とも） | 標準出力／標準エラー出力（Cloud Logging）のログレベル。`predictor.log`（GCS 退避ログ）には LOG_LEVEL に関わらず INFO 以上を常に記録するため、再送の試行ログは GCS 側で必ず確認できる（`DEBUG` 指定時は DEBUG も記録） |

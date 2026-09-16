@@ -3,6 +3,7 @@ import os
 import logging
 import traceback
 import sys
+import time
 
 import mysql.connector
 from datetime import datetime as dt, timedelta, timezone
@@ -32,6 +33,12 @@ from egpf_common import (
 
 # 通知の先頭に付ける機能名（例: [MCI Ver4][本番] 月次予測 失敗あり）
 NOTIFY_SOURCE = "MCI Ver4"
+
+# MySQL 接続の再試行（起動直後の一時的な接続失敗で N3 を出さないため）
+ENV_MYSQL_CONNECT_ATTEMPTS = "MCI_MYSQL_CONNECT_ATTEMPTS"
+ENV_MYSQL_CONNECT_RETRY_WAIT_SEC = "MCI_MYSQL_CONNECT_RETRY_WAIT_SEC"
+DEFAULT_MYSQL_CONNECT_ATTEMPTS = 3
+DEFAULT_MYSQL_CONNECT_RETRY_WAIT_SEC = 2.0
 
 # PredictorWithLoggingをインポート
 try:
@@ -215,6 +222,42 @@ def configure_logging():
         logging.getLogger(__name__).warning("LOG_LEVEL=%r is not a valid level. using INFO", log_level_name)
 
 
+def _env_number(name, default, cast, minimum):
+    """環境変数を数値で読む。未設定・不正値・下限未満は既定値。"""
+    raw = (os.environ.get(name) or '').strip()
+    if not raw:
+        return default
+    try:
+        value = cast(raw)
+    except ValueError:
+        return default
+    return value if value >= minimum else default
+
+
+def connect_mysql(connection_params, logger):
+    """MySQL へ接続する。失敗したら固定間隔で再試行し、すべて失敗したら最後の例外をそのまま投げる。
+
+    Cloud Run Job（Direct VPC egress）から Cloud SQL への接続が、起動直後に
+    `dial tcp ...:3307: i/o timeout`（アプリ側は 2013 Lost connection ... system error: 95）で
+    一時的に失敗することがある（STG 2026-09-14/15 に計 11 回、本番 2026-08-24 に 4 回）。
+    毎分起動のジョブで 1 回の失敗ごとに N3 を送らないよう、接続だけ再試行する。
+    認証エラー等の恒常的な失敗も同じ回数だけ試行してから N3 になる（待ちは合計数秒）。
+    """
+    attempts = _env_number(ENV_MYSQL_CONNECT_ATTEMPTS, DEFAULT_MYSQL_CONNECT_ATTEMPTS, int, 1)
+    wait_sec = _env_number(ENV_MYSQL_CONNECT_RETRY_WAIT_SEC, DEFAULT_MYSQL_CONNECT_RETRY_WAIT_SEC, float, 0)
+    for attempt in range(1, attempts + 1):
+        try:
+            return mysql.connector.connect(**connection_params)
+        except Exception as e:
+            if attempt >= attempts:
+                logger.warning("MySQL connect attempt=%d/%d failed, giving up: %s: %s",
+                               attempt, attempts, type(e).__name__, e)
+                raise
+            logger.warning("MySQL connect attempt=%d/%d failed: %s: %s retry_in=%ss",
+                           attempt, attempts, type(e).__name__, e, wait_sec)
+            time.sleep(wait_sec)
+
+
 def main():
     configure_logging()
     logger = logging.getLogger(__name__)
@@ -259,7 +302,7 @@ def main():
             # Use host for direct connection
             connection_params['host'] = mysql_host
 
-        cnx = mysql.connector.connect(**connection_params)
+        cnx = connect_mysql(connection_params, logger)
 
         if cnx.is_connected:
             logger.debug("Connected Mysql!")
