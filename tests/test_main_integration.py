@@ -536,17 +536,90 @@ class TestNoNotification:
 
 
 # ---------------------------------------------------------------------------
+# MySQL 接続の再試行（起動直後の一時的な接続失敗で N3 を出さない）
+# ---------------------------------------------------------------------------
+class TestMysqlConnectRetry:
+    def _run(self, connect_side_effect):
+        cnx = MagicMock(name="cnx")
+        cnx.cursor.return_value = FakeCursor([], {})
+        effects = [cnx if e is None else e for e in connect_side_effect]
+        with patch.object(main.mysql.connector, "connect", side_effect=effects) as connect, \
+                patch.object(main.time, "sleep") as db_sleep, \
+                patch.object(egpf_common.requests, "get") as get, \
+                patch.object(egpf_common.requests, "post", return_value=_resp(200, {})) as post:
+            try:
+                main.main()
+                code = 0
+            except SystemExit as e:
+                code = e.code
+        return code, connect, db_sleep, post
+
+    def test_transient_failures_then_success_do_not_notify(self, env, capsys):
+        # Cloud Run Job 起動直後の i/o timeout を 2 回 → 3 回目で接続できる
+        timeout = OSError("2013 (HY000): Lost connection to MySQL server at 'reading initial communication packet', system error: 95")
+        code, connect, db_sleep, post = self._run([timeout, timeout, None])
+
+        assert code == 0
+        assert connect.call_count == 3
+        assert [c.args[0] for c in db_sleep.call_args_list] == [2.0, 2.0]
+        post.assert_not_called()  # N3 は出ない
+        out = capsys.readouterr().out
+        assert "MySQL connect attempt=1/3 failed: OSError" in out
+        assert "MySQL connect attempt=2/3 failed: OSError" in out
+        assert "retry_in=2.0s" in out
+
+    def test_success_on_first_attempt_does_not_sleep(self, env):
+        code, connect, db_sleep, post = self._run([None])
+
+        assert code == 0
+        assert connect.call_count == 1
+        db_sleep.assert_not_called()
+        post.assert_not_called()
+
+    def test_all_attempts_fail_notifies_once_with_last_error(self, env, capsys):
+        code, connect, db_sleep, post = self._run([OSError("first"), OSError("second"), OSError("third")])
+
+        assert code == 1
+        assert connect.call_count == 3
+        assert post.call_count == 1
+        assert _text(post) == "[MCI Ver4][STG] 予期しないエラー\nエラー内容: OSError: third\n処理を中断しました"
+        assert "MySQL connect attempt=3/3 failed, giving up: OSError: third" in capsys.readouterr().out
+
+    def test_attempts_and_wait_are_configurable(self, env, monkeypatch):
+        monkeypatch.setenv("MCI_MYSQL_CONNECT_ATTEMPTS", "2")
+        monkeypatch.setenv("MCI_MYSQL_CONNECT_RETRY_WAIT_SEC", "0.5")
+        code, connect, db_sleep, post = self._run([OSError("a"), OSError("b")])
+
+        assert code == 1
+        assert connect.call_count == 2
+        assert [c.args[0] for c in db_sleep.call_args_list] == [0.5]
+        assert post.call_count == 1
+
+    @pytest.mark.parametrize("attempts", ["0", "-1", "abc", ""])
+    def test_invalid_attempts_fall_back_to_default(self, env, monkeypatch, attempts):
+        monkeypatch.setenv("MCI_MYSQL_CONNECT_ATTEMPTS", attempts)
+        code, connect, db_sleep, post = self._run([OSError("a"), OSError("b"), OSError("c")])
+
+        assert code == 1
+        assert connect.call_count == 3
+
+
+# ---------------------------------------------------------------------------
 # N3: タスク単位／最外殻の例外
 # ---------------------------------------------------------------------------
 class TestN3Unexpected:
     def test_outermost_exception_notifies_and_exits_1(self, env):
-        with patch.object(main.mysql.connector, "connect", side_effect=RuntimeError("db unreachable")), \
+        with patch.object(main.mysql.connector, "connect", side_effect=RuntimeError("db unreachable")) as connect, \
+                patch.object(main.time, "sleep") as db_sleep, \
                 patch.object(egpf_common.requests, "get") as get, \
                 patch.object(egpf_common.requests, "post", return_value=_resp(200, {})) as post:
             with pytest.raises(SystemExit) as ei:
                 main.main()
 
         assert ei.value.code == 1
+        # 接続は既定 3 回まで試行してから N3（通知は 1 通）
+        assert connect.call_count == 3
+        assert db_sleep.call_count == 2
         get.assert_not_called()
         assert post.call_count == 1
         assert post.call_args.kwargs["json"] == {
@@ -558,6 +631,7 @@ class TestN3Unexpected:
     def test_outermost_exception_without_webhook_still_exits_1(self, env, monkeypatch):
         monkeypatch.delenv("ERROR_NOTIFY_SLACK_WEBHOOK_URL")
         with patch.object(main.mysql.connector, "connect", side_effect=RuntimeError("db unreachable")), \
+                patch.object(main.time, "sleep"), \
                 patch.object(egpf_common.requests, "post") as post:
             with pytest.raises(SystemExit) as ei:
                 main.main()
