@@ -219,7 +219,6 @@ class TestEnv:
 
     def test_create_cache_does_not_create_client(self, env_clean):
         env_clean.setenv(ENV_CACHE_BUCKET, BUCKET)
-        env_clean.setenv(ENV_CACHE_ENABLED, "1")
         calls = []
         fake_storage = types.ModuleType("google.cloud.storage")
         fake_storage.Client = lambda *a, **k: calls.append(1)
@@ -231,13 +230,25 @@ class TestEnv:
         assert calls == []
         assert create_cache().writable is True
 
-    def test_create_cache_requires_enabled_flag(self, env_clean):
+    @pytest.mark.parametrize("enabled", [None, "", "0", "off", "false"])
+    def test_create_cache_works_while_flag_off(self, env_clean, client, caplog, enabled):
+        """EGPF_CACHE_ENABLED は「予測時にキャッシュを使うか」だけを切り替える（設計書 3.7・5.1・6.4）。
+
+        フラグ OFF の期間も、バケットが設定されていれば create_cache はキャッシュを返し、
+        事前取得ジョブの保存と予測実行時の比較ログが動くこと（回帰テスト）。
+        """
         env_clean.setenv(ENV_CACHE_BUCKET, BUCKET)
-        assert create_cache() is None
-        env_clean.setenv(ENV_CACHE_ENABLED, "1")
-        assert isinstance(create_cache(), EgpfCache)
-        env_clean.setenv(ENV_CACHE_ENABLED, "0")
-        assert create_cache() is None
+        if enabled is not None:
+            env_clean.setenv(ENV_CACHE_ENABLED, enabled)
+        assert is_cache_enabled() is False
+        c = create_cache(writable=True, logger=logging.getLogger(LOGGER_NAME))
+        assert isinstance(c, EgpfCache)
+        c._client = client  # GCS はフェイク
+        assert c.save(SPID, HOUSE, DAY, STS, ETS, _response(3)) is True
+        caplog.set_level(logging.INFO, logger=LOGGER_NAME)
+        c.compare_and_log(SPID, HOUSE, DAY, STS, ETS, _response(3))
+        assert any("EGPF cache compare:" in r.getMessage() and "cache_filled=2" in r.getMessage()
+                   for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

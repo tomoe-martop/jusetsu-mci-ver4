@@ -24,7 +24,7 @@ import os
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Set, Tuple
 
-__version__ = "1.0.1"
+__version__ = "1.0.0"
 
 # ---------------------------------------------------------------------------
 # 定数・環境変数（呼び出し時に読む。import 時に固定しない）
@@ -316,9 +316,7 @@ class EgpfCache:
 
 
 def create_cache(writable: bool = True, logger: Optional[logging.Logger] = None) -> Optional[EgpfCache]:
-    """EGPF_CACHE_ENABLED が ON かつバケット設定ありなら EgpfCache を返す。未設定/無効時は None。"""
-    if not is_cache_enabled():
-        return None
+    """EGPF_CACHE_BUCKET が設定されていれば EgpfCache を返す（GCS クライアントはまだ作らない）。未設定は None。"""
     bucket = get_bucket_name()
     if bucket is None:
         return None
