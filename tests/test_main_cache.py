@@ -178,6 +178,22 @@ class TestCacheOn:
         assert loaded == RESP_DAY2
         assert (1, 1, 100) in cursor.house_updates()
 
+    def test_unfinished_days_are_not_saved(self, env, gcs, monkeypatch):
+        """即時実行は当日・未来日を含む期間でも作れる（PR #9 レビュー指摘）。終わっていない日は保存しない。"""
+        from datetime import datetime, timedelta
+        _cache_on(monkeypatch)
+        today = datetime.now(egpf_cache.JST).date()
+        days = [today - timedelta(days=1), today, today + timedelta(days=1)]
+        cursor = FakeCursor([(32, days[0].isoformat(), days[-1].isoformat())], {32: [_house(1, "H1")]})
+
+        code, get, post, sleep = run_main(
+            cursor, [_resp(200, _day_response(d, {2: [1.0, 0.0]})) for d in days])
+
+        assert code == 0
+        assert get.call_count == 3  # 3 日ともキャッシュに無いので EGPF から取得
+        assert _uploaded_keys(gcs.client) == [egpf_cache.object_key("0187", "H1", days[0])]  # 前日分だけ保存
+        assert (1, 1, 100) in cursor.house_updates()
+
     def test_miss_with_invalid_response_is_not_saved(self, env, gcs, monkeypatch):
         _cache_on(monkeypatch)
         cursor = FakeCursor([(31, "2026-08-01", "2026-08-01")], {31: [_house(1, "H1")]})
