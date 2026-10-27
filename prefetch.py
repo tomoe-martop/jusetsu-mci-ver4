@@ -308,6 +308,14 @@ def run(now=None, clock=None):
 
     today = resolve_today(now)
     days = target_days(today, catchup_days)
+    # 終わっていない日（EGPF_PREFETCH_BASE_DATE に明日以降を指定した場合など）は取りに行かない。
+    # egpf_cache.save も保存しないため、取得しても EGPF への無駄なリクエストになる
+    now_epoch = now.timestamp() if now is not None else time.time()
+    unfinished = [d for d in days if egpf_cache.day_bounds(d)[1] > now_epoch]
+    if unfinished:
+        logger.warning("skip unfinished days (not fetched): %s",
+                       ",".join(d.strftime("%Y-%m-%d") for d in unfinished))
+        days = [d for d in days if d not in unfinished]
     logger.info("prefetch settings: bucket=%s today=%s catchup_days=%s interval_sec=%s max_requests=%s "
                 "max_minutes=%s days=%s",
                 cache.bucket_name, today, catchup_days, interval_sec, max_requests, max_minutes,

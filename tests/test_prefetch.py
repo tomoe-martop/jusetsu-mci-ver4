@@ -256,6 +256,21 @@ class TestTargetDays:
         assert _requested(get) == [("H1", date(2026, 10, 8)), ("H1", date(2026, 10, 9))]
 
 
+class TestUnfinishedDays:
+    def test_future_base_date_skips_unfinished_days_without_egpf(self, env, gcs, db, monkeypatch, caplog_info):
+        """基準日に明日以降を指定しても、終わっていない日は EGPF に取りに行かない（保存もされないため）。"""
+        real_today = datetime.now(egpf_cache.JST).date()
+        monkeypatch.setenv(prefetch.ENV_BASE_DATE, (real_today + timedelta(days=2)).strftime("%Y-%m-%d"))
+        monkeypatch.setenv(prefetch.ENV_CATCHUP_DAYS, "3")  # 前日=明日、今日、昨日
+        code, get, sleep = run_prefetch()
+
+        finished = [d for d in prefetch.target_days(real_today + timedelta(days=2), 3) if d < real_today]
+        assert _requested(get) == [("H1", d) for d in finished]
+        assert "skip unfinished days (not fetched)" in caplog_info.text
+        assert code == 0
+        assert "save_failed=0" in _summary(caplog_info)
+
+
 class TestResolveToday:
     def test_now_in_jst(self, monkeypatch):
         monkeypatch.delenv(prefetch.ENV_BASE_DATE, raising=False)
