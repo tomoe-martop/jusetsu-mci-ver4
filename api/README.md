@@ -168,3 +168,32 @@ pred_mci.PredictorWithLogging.__init__(lgb_models_dir_path: str, logi_models_dir
 `logi_models_dir_path: str` : Logistic回帰モデルのディレクトリパス
 `lgb_scaler_path: str` : LightGBMモデル向け変数スケーラのファイルパス
 `logi_scaler_path: str` : Logistic回帰モデル向け変数スケーラのファイルパス
+
+
+## `egpf_cache`（EGPF 1分値の GCS キャッシュ）
+
+EGPF `estimated_data`（1分値）の生レスポンスを、日単位で GCS に保存・読み出しする共通モジュールです。
+設計書: `docs/EG_DASHBOARD-102 【高負荷対応】MCI用の事前データ取得/設計書_EGPF1分値の事前取得・キャッシュ設計.md`
+
+- オブジェクトキー: `estimated_data/v1/{spid}/{houseid}/{YYYYMMDD}.json.gz`（日付は JST の対象日）
+- 内容: 封筒 JSON（`schema`, `spid`, `house`, `date`, `sts`, `ets`, `fetched_at`, `filled_minutes`, `response`）を gzip 圧縮。`Content-Encoding` は付けない。カスタムメタデータに `fetched_at`・`filled_minutes`
+- 読み出し時に `schema`・`sts`/`ets`・`timestamps` の件数を検証し、不正ならキャッシュ無しとして扱う
+- GCS の障害（import・Client 生成・読み書き・一覧）は警告ログを出して `None`/`False` を返す。例外は外に出さない
+- `create_cache(writable=False)` で作ると `save()` は GCS を呼ばずに `False` を返す（Ver3 は読み取り専用）
+
+```python
+from egpf_cache import create_cache, day_bounds
+
+cache = create_cache(writable=True)   # EGPF_CACHE_BUCKET 未設定なら None
+if cache is not None:
+    sts, ets = day_bounds(day)        # JST 0:00 起点の UNIX 秒
+    res = cache.load(spid, houseid, day, sts, ets)      # 無ければ None
+    cache.save(spid, houseid, day, sts, ets, response_json)
+```
+
+| 環境変数 | 既定 | 用途 |
+|---|---|---|
+| `EGPF_CACHE_BUCKET` | （未設定） | キャッシュ用バケット名。未設定ならキャッシュを使わない |
+| `EGPF_CACHE_ENABLED` | OFF | `1`/`true`/`yes`/`on`（大文字小文字・前後空白は無視）で ON。`is_cache_enabled()` はバケット設定ありも条件にする |
+
+**コピー配置の規約**: `api/egpf_cache.py` は **jusetsu-mci-ver3（Python 3.8）と同一内容をコピー配置**しています。変更時は `__version__` を上げ、両リポジトリに反映してください。Python 3.8 互換・依存は標準ライブラリと `google-cloud-storage` のみ（`google.cloud.storage` は関数内で遅延 import）・他のプロジェクトファイルを import しない。
