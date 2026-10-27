@@ -219,6 +219,7 @@ class TestEnv:
 
     def test_create_cache_does_not_create_client(self, env_clean):
         env_clean.setenv(ENV_CACHE_BUCKET, BUCKET)
+        env_clean.setenv(ENV_CACHE_ENABLED, "1")
         calls = []
         fake_storage = types.ModuleType("google.cloud.storage")
         fake_storage.Client = lambda *a, **k: calls.append(1)
@@ -229,6 +230,14 @@ class TestEnv:
         assert c.writable is False
         assert calls == []
         assert create_cache().writable is True
+
+    def test_create_cache_requires_enabled_flag(self, env_clean):
+        env_clean.setenv(ENV_CACHE_BUCKET, BUCKET)
+        assert create_cache() is None
+        env_clean.setenv(ENV_CACHE_ENABLED, "1")
+        assert isinstance(create_cache(), EgpfCache)
+        env_clean.setenv(ENV_CACHE_ENABLED, "0")
+        assert create_cache() is None
 
 
 # ---------------------------------------------------------------------------
