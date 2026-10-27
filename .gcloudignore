@@ -51,3 +51,6 @@ mock_api_server/
 # deploy.sh は .env.<ENV> を読んで --set-env-vars でジョブに渡すため、イメージ内には不要
 .env
 .env.*
+
+# auto-sprint の作業メモ（spec・レポート）。ビルドにもリポジトリにも含めない
+.sprints/
