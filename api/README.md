@@ -177,8 +177,12 @@ EGPF `estimated_data`（1分値）の生レスポンスを、日単位で GCS �
 
 - オブジェクトキー: `estimated_data/v1/{spid}/{houseid}/{YYYYMMDD}.json.gz`（日付は JST の対象日）
 - 内容: 封筒 JSON（`schema`, `spid`, `house`, `date`, `sts`, `ets`, `fetched_at`, `filled_minutes`, `response`）を gzip 圧縮。`Content-Encoding` は付けない。カスタムメタデータに `fetched_at`・`filled_minutes`
-- 読み出し時に `schema`・`sts`/`ets`・`timestamps` の件数を検証し、不正ならキャッシュ無しとして扱う
+- 読み出し時に `schema`・`sts`/`ets`・`timestamps` の件数を検証し、不正ならキャッシュ無しとして扱う。`timestamps` は **1 件以上 `(ets-sts)/60 + 1` 件以下**（1日 1441 件まで。`ets` ちょうどの分を含む場合に備える）を有効とし、**0 件は不正**（保存もしない）
+- **対象日が終わっていない日（`ets` が現在時刻より後 = 当日・未来日）は保存しない**（INFO ログ `EGPF cache save skipped (day not finished)` を出して `False`）。猶予時間は無く、`ets <= 現在時刻` なら保存する。現在時刻は `EgpfCache(..., clock=...)`（UNIX 秒を返す関数。既定 `time.time`）で差し替えられる
+- 保存成功時は INFO ログ `EGPF cache saved: key=... timestamps=N filled_minutes=M`、不正レスポンスで保存しないときの警告にも `timestamps=N` を出す（STG で実件数を確認する用）
 - GCS の障害（import・Client 生成・読み書き・一覧）は警告ログを出して `None`/`False` を返す。例外は外に出さない
+- GCS 呼び出し（`download_as_bytes`・`upload_from_string`・`list_blobs`）には `timeout=GCS_TIMEOUT_SEC`（5秒）と、期限を `GCS_RETRY_DEADLINE_SEC`（10秒）に絞った `DEFAULT_RETRY` を渡す（retry を組み立てられない環境では timeout のみ）
+- GCS の障害（NotFound 以外。Client 生成失敗を含む）が `GCS_MAX_CONSECUTIVE_FAILURES`（3回）続くと、**そのインスタンスでは以後 GCS を呼ばない**（`load`/`load_envelope`/`list_cached_days` は `None`、`save` は `False`、`compare_and_log` は `cache_filled=missing`）。遮断時に WARNING `EGPF cache disabled after N consecutive GCS failures` を1回だけ出す。正常応答（NotFound を含む）でカウンタはリセット。状態は `cache.disabled` で読める（事前取得ジョブの打ち切り判定用）
 - `create_cache(writable=False)` で作ると `save()` は GCS を呼ばずに `False` を返す（Ver3 は読み取り専用）
 
 ```python

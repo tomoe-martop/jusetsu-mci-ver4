@@ -20,6 +20,9 @@ from egpf_cache import (
     APP_TYPE_IDS,
     ENV_CACHE_BUCKET,
     ENV_CACHE_ENABLED,
+    GCS_MAX_CONSECUTIVE_FAILURES,
+    GCS_RETRY_DEADLINE_SEC,
+    GCS_TIMEOUT_SEC,
     JST,
     KEY_PREFIX,
     SCHEMA,
@@ -39,6 +42,7 @@ SPID = "0187"
 HOUSE = "MAEBASHI02"
 DAY = date(2026, 10, 1)
 STS, ETS = day_bounds(DAY)
+NOW = ETS + 5 * 3600  # 翌日 5:00 JST（事前取得ジョブの実行時刻相当。DAY は確定済み）
 LOGGER_NAME = "test_egpf_cache"
 
 
@@ -59,15 +63,17 @@ class FakeBlob:
         self.content_encoding = None
         self.content_type = None
 
-    def download_as_bytes(self):
+    def download_as_bytes(self, **kwargs):
+        self._store.calls.append(("download", kwargs))
         if "download" in self._fail:
             raise self._fail["download"]
         if self.name not in self._store.objects:
             raise NotFound("No such object: %s" % self.name)
         return self._store.objects[self.name]["body"]
 
-    def upload_from_string(self, data, content_type=None):
+    def upload_from_string(self, data, content_type=None, **kwargs):
         self._store.upload_calls += 1
+        self._store.calls.append(("upload", kwargs))
         if "upload" in self._fail:
             raise self._fail["upload"]
         self.content_type = content_type
@@ -97,13 +103,15 @@ class FakeClient:
         self.blob_calls = 0
         self.upload_calls = 0
         self.list_calls = 0
+        self.calls = []  # GCS 呼び出し（download/upload/list）と渡されたキーワード引数（timeout・retry など）
 
     def bucket(self, name):
         self.bucket_calls.append(name)
         return FakeBucket(self, self.fail)
 
-    def list_blobs(self, bucket_name, prefix=None):
+    def list_blobs(self, bucket_name, prefix=None, **kwargs):
         self.list_calls += 1
+        self.calls.append(("list", kwargs))
         if "list" in self.fail:
             raise self.fail["list"]
         return [types.SimpleNamespace(name=n) for n in sorted(self.objects) if n.startswith(prefix or "")]
@@ -137,7 +145,7 @@ def client():
 
 @pytest.fixture
 def cache(client, logger):
-    return EgpfCache(BUCKET, client=client, logger=logger)
+    return EgpfCache(BUCKET, client=client, logger=logger, clock=lambda: NOW)
 
 
 @pytest.fixture
@@ -149,6 +157,10 @@ def env_clean(monkeypatch):
 
 def _warnings(caplog):
     return [r for r in caplog.records if r.name == LOGGER_NAME and r.levelno == logging.WARNING]
+
+
+def _infos(caplog):
+    return [r.getMessage() for r in caplog.records if r.name == LOGGER_NAME and r.levelno == logging.INFO]
 
 
 # ---------------------------------------------------------------------------
@@ -301,12 +313,21 @@ class TestFilledMinutes:
 
 class TestValidResponse:
     def test_valid_counts(self):
-        assert is_valid_response(_response(0), STS, ETS) is True
+        assert is_valid_response(_response(1), STS, ETS) is True
         assert is_valid_response(_response(3), STS, ETS) is True
         assert is_valid_response({"data": [{"timestamps": list(range(1440))}]}, STS, ETS) is True
 
+    def test_zero_timestamps_is_invalid(self):
+        # データが無い日（mock-api-stg・未来日は timestamps: []）は保存もヒットもさせない
+        assert is_valid_response(_response(0), STS, ETS) is False
+        assert is_valid_response({"data": [{"timestamps": []}]}, STS, ETS) is False
+
+    def test_upper_limit_includes_ets_minute(self):
+        # 実 EGPF が ets ちょうどの分を含めて返す場合に備え、(ets-sts)/60 + 1 = 1441 件まで有効
+        assert is_valid_response({"data": [{"timestamps": list(range(1441))}]}, STS, ETS) is True
+
     def test_too_many_timestamps(self):
-        assert is_valid_response({"data": [{"timestamps": list(range(1441))}]}, STS, ETS) is False
+        assert is_valid_response({"data": [{"timestamps": list(range(1442))}]}, STS, ETS) is False
 
     @pytest.mark.parametrize("res", [None, [], {}, {"data": []}, {"data": None}, {"data": ["x"]},
                                      {"data": [{}]}, {"data": [{"timestamps": "abc"}]}])
@@ -375,15 +396,32 @@ class TestSaveLoad:
         assert cache.load(SPID, "OTHER", DAY, STS, ETS) is None
         assert cache.load("9991", HOUSE, DAY, STS, ETS) is None
 
-    @pytest.mark.parametrize("res", [{"data": []}, {}, None, {"data": [{"timestamps": list(range(1441))}]}])
-    def test_invalid_response_not_saved(self, cache, client, caplog, res):
+    @pytest.mark.parametrize("res,count", [
+        ({"data": []}, "None"), ({}, "None"), (None, "None"),
+        ({"data": [{"timestamps": []}]}, "0"),
+        ({"data": [{"timestamps": list(range(1442))}]}, "1442"),
+    ])
+    def test_invalid_response_not_saved(self, cache, client, caplog, res, count):
         caplog.set_level(logging.WARNING, logger=LOGGER_NAME)
         assert cache.save(SPID, HOUSE, DAY, STS, ETS, res) is False
         assert client.objects == {} and client.upload_calls == 0
         assert len(_warnings(caplog)) == 1
+        # STG で実件数を確認できるよう、件数を出す
+        assert "timestamps=%s" % count in _warnings(caplog)[0].getMessage()
+
+    def test_1441_timestamps_saved(self, cache, client):
+        res = {"data": [{"timestamps": [STS + 60 * i for i in range(1441)], "appliance_types": []}]}
+        assert cache.save(SPID, HOUSE, DAY, STS, ETS, res) is True
+        assert cache.load(SPID, HOUSE, DAY, STS, ETS) == res
+
+    def test_saved_log_has_counts(self, cache, caplog):
+        caplog.set_level(logging.INFO, logger=LOGGER_NAME)
+        assert cache.save(SPID, HOUSE, DAY, STS, ETS, _response(3)) is True
+        assert _infos(caplog) == [
+            "EGPF cache saved: key=estimated_data/v1/0187/MAEBASHI02/20261001.json.gz timestamps=3 filled_minutes=2"]
 
     def test_read_only_never_touches_gcs_on_save(self, client, logger):
-        ro = EgpfCache(BUCKET, client=client, writable=False, logger=logger)
+        ro = EgpfCache(BUCKET, client=client, writable=False, logger=logger, clock=lambda: NOW)
         assert ro.save(SPID, HOUSE, DAY, STS, ETS, _response(3)) is False
         assert client.bucket_calls == [] and client.blob_calls == 0 and client.upload_calls == 0
         assert client.objects == {}
@@ -444,9 +482,17 @@ class TestInvalidCache:
 
     def test_timestamps_over_limit(self, cache, client, caplog):
         env = self._good()
-        env["response"] = {"data": [{"timestamps": list(range(1441)), "appliance_types": []}]}
+        env["response"] = {"data": [{"timestamps": list(range(1442)), "appliance_types": []}]}
         client.put_envelope(self.KEY, env)
         self._assert_discarded(cache, caplog)
+
+    def test_zero_timestamps(self, cache, client, caplog):
+        # 修正前に保存された空の日もヒットさせない（キャッシュ無し扱い → EGPF から取り直す）
+        env = self._good()
+        env["response"] = {"data": [{"timestamps": [], "appliance_types": []}]}
+        client.put_envelope(self.KEY, env)
+        self._assert_discarded(cache, caplog)
+        assert "timestamps=0" in _warnings(caplog)[0].getMessage()
 
     def test_data_empty(self, cache, client, caplog):
         env = self._good()
@@ -510,7 +556,7 @@ class TestListCachedDays:
 # ---------------------------------------------------------------------------
 class TestGcsFailure:
     def _cache(self, logger, **fail):
-        return EgpfCache(BUCKET, client=FakeClient(fail=fail), logger=logger)
+        return EgpfCache(BUCKET, client=FakeClient(fail=fail), logger=logger, clock=lambda: NOW)
 
     def test_download_error(self, logger, caplog):
         caplog.set_level(logging.WARNING, logger=LOGGER_NAME)
@@ -543,23 +589,27 @@ class TestGcsFailure:
         fake_storage = types.ModuleType("google.cloud.storage")
         fake_storage.Client = boom
         monkeypatch.setitem(sys.modules, "google.cloud.storage", fake_storage)
-        c = EgpfCache(BUCKET, logger=logger)
+        c = EgpfCache(BUCKET, logger=logger, clock=lambda: NOW)
         assert calls == []  # 生成は初回利用時
         assert c.load(SPID, HOUSE, DAY, STS, ETS) is None
         assert c.save(SPID, HOUSE, DAY, STS, ETS, _response(3)) is False
         assert c.list_cached_days(SPID, HOUSE) is None
+        # Client 生成失敗も障害に数える → 3回で遮断。以後の compare_and_log は警告を出さず missing
+        assert c.disabled is True
         c.compare_and_log(SPID, HOUSE, DAY, STS, ETS, _response(3))
-        assert len(_warnings(caplog)) == 4
+        assert len(_warnings(caplog)) == 4  # 障害 3 + 遮断 1
+        assert "disabled" in _warnings(caplog)[3].getMessage()
         assert calls == [1]  # 失敗後は再生成しない
 
     def test_import_error(self, monkeypatch, logger, caplog):
         caplog.set_level(logging.WARNING, logger=LOGGER_NAME)
         monkeypatch.setitem(sys.modules, "google.cloud.storage", None)  # import が ImportError になる
-        c = EgpfCache(BUCKET, logger=logger)
+        c = EgpfCache(BUCKET, logger=logger, clock=lambda: NOW)
         assert c.load(SPID, HOUSE, DAY, STS, ETS) is None
         assert c.save(SPID, HOUSE, DAY, STS, ETS, _response(3)) is False
         assert c.list_cached_days(SPID, HOUSE) is None
-        assert len(_warnings(caplog)) == 3
+        assert len(_warnings(caplog)) == 4  # 障害 3 + 遮断 1
+        assert c.disabled is True
         assert "ImportError" in _warnings(caplog)[0].getMessage() or \
             "ModuleNotFoundError" in _warnings(caplog)[0].getMessage()
 
@@ -569,7 +619,7 @@ class TestGcsFailure:
         fake_storage = types.ModuleType("google.cloud.storage")
         fake_storage.Client = lambda *a, **k: calls.append(1) or fake
         monkeypatch.setitem(sys.modules, "google.cloud.storage", fake_storage)
-        c = EgpfCache(BUCKET, logger=logger)
+        c = EgpfCache(BUCKET, logger=logger, clock=lambda: NOW)
         assert calls == []
         assert c.save(SPID, HOUSE, DAY, STS, ETS, _response(3)) is True
         assert c.load(SPID, HOUSE, DAY, STS, ETS) == _response(3)
@@ -614,7 +664,8 @@ class TestCompareAndLog:
 
     def test_gcs_error_is_missing_and_no_exception(self, logger, caplog):
         caplog.set_level(logging.INFO, logger=LOGGER_NAME)
-        c = EgpfCache(BUCKET, client=FakeClient(fail={"download": RuntimeError("down")}), logger=logger)
+        c = EgpfCache(BUCKET, client=FakeClient(fail={"download": RuntimeError("down")}), logger=logger,
+                      clock=lambda: NOW)
         c.compare_and_log(SPID, HOUSE, DAY, STS, ETS, _response(3))
         assert "cache_filled=missing" in self._info(caplog)[0]
 
@@ -622,6 +673,212 @@ class TestCompareAndLog:
         cache.compare_and_log(SPID, HOUSE, DAY, STS, ETS, None)
         cache.compare_and_log(SPID, HOUSE, "not a date", STS, ETS, _response(3))
         assert client.upload_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# 未確定の日（当日・未来日）は保存しない
+# ---------------------------------------------------------------------------
+class TestUnfinishedDay:
+    def _cache(self, client, logger, now):
+        return EgpfCache(BUCKET, client=client, logger=logger, clock=lambda: now)
+
+    def test_today_not_saved(self, client, logger, caplog):
+        caplog.set_level(logging.INFO, logger=LOGGER_NAME)
+        c = self._cache(client, logger, STS + 12 * 3600)  # 対象日の 12:00（途中まで）
+        assert c.save(SPID, HOUSE, DAY, STS, ETS, _response(3)) is False
+        assert client.objects == {} and client.calls == [] and client.blob_calls == 0
+        infos = _infos(caplog)
+        assert len(infos) == 1 and "EGPF cache save skipped (day not finished)" in infos[0]
+        assert "date=2026-10-01" in infos[0] and "ets=%d" % ETS in infos[0]
+        assert _warnings(caplog) == []
+
+    def test_future_day_with_empty_response_is_info_not_warning(self, client, logger, caplog):
+        # 未来日は timestamps: [] になるが、不正レスポンスの警告ではなく未確定日として INFO で弾く
+        caplog.set_level(logging.INFO, logger=LOGGER_NAME)
+        c = self._cache(client, logger, STS - 86400)
+        assert c.save(SPID, HOUSE, DAY, STS, ETS, _response(0)) is False
+        assert client.calls == []
+        assert _warnings(caplog) == []
+        assert any("day not finished" in m for m in _infos(caplog))
+
+    def test_one_second_before_end_not_saved(self, client, logger):
+        assert self._cache(client, logger, ETS - 1).save(SPID, HOUSE, DAY, STS, ETS, _response(3)) is False
+        assert client.objects == {}
+
+    def test_ets_equal_now_is_saved(self, client, logger):
+        # 猶予時間は設けない（ets <= now なら保存可）
+        c = self._cache(client, logger, ETS)
+        assert c.save(SPID, HOUSE, DAY, STS, ETS, _response(3)) is True
+        assert c.load(SPID, HOUSE, DAY, STS, ETS) == _response(3)
+
+    def test_default_clock_is_current_time(self, client, logger):
+        c = EgpfCache(BUCKET, client=client, logger=logger)
+        today = datetime.now(JST).date()
+        assert c.save(SPID, HOUSE, today, *day_bounds(today), _response(1, sts=day_bounds(today)[0])) is False
+        yesterday = today - timedelta(days=1)
+        assert c.save(SPID, HOUSE, yesterday, *day_bounds(yesterday),
+                      _response(1, sts=day_bounds(yesterday)[0])) is True
+
+    def test_broken_clock_does_not_raise(self, client, logger):
+        def boom():
+            raise RuntimeError("clock")
+        c = EgpfCache(BUCKET, client=client, logger=logger, clock=boom)
+        assert c.save(SPID, HOUSE, DAY, STS, ETS, _response(3)) is False
+        assert client.calls == []
+
+
+# ---------------------------------------------------------------------------
+# GCS 呼び出しの timeout・retry
+# ---------------------------------------------------------------------------
+class _FakeRetry:
+    def __init__(self, name, deadline=None):
+        self.name = name
+        self.deadline = deadline
+
+
+def _fake_retry_module(with_timeout=True, with_deadline=True):
+    base = types.SimpleNamespace()
+    if with_timeout:
+        base.with_timeout = lambda t: _FakeRetry("with_timeout", t)
+    if with_deadline:
+        base.with_deadline = lambda t: _FakeRetry("with_deadline", t)
+    mod = types.ModuleType("google.cloud.storage.retry")
+    mod.DEFAULT_RETRY = base
+    return mod
+
+
+class TestGcsCallOptions:
+    def _exercise(self, client, logger):
+        c = EgpfCache(BUCKET, client=client, logger=logger, clock=lambda: NOW)
+        assert c.save(SPID, HOUSE, DAY, STS, ETS, _response(3)) is True
+        assert c.load(SPID, HOUSE, DAY, STS, ETS) == _response(3)
+        assert c.list_cached_days(SPID, HOUSE) == {DAY}
+        assert [name for name, _ in client.calls] == ["upload", "download", "list"]
+        return [kw for _, kw in client.calls]
+
+    def test_constants(self):
+        assert GCS_TIMEOUT_SEC == 5
+        assert GCS_RETRY_DEADLINE_SEC == 10
+        assert GCS_MAX_CONSECUTIVE_FAILURES == 3
+
+    def test_timeout_and_retry_with_timeout(self, monkeypatch, client, logger):
+        monkeypatch.setitem(sys.modules, "google.cloud.storage.retry", _fake_retry_module())
+        kwargs_list = self._exercise(client, logger)
+        for kw in kwargs_list:
+            assert kw["timeout"] == GCS_TIMEOUT_SEC
+            assert kw["retry"].name == "with_timeout" and kw["retry"].deadline == GCS_RETRY_DEADLINE_SEC
+        # retry は 1度だけ組み立てて使い回す
+        assert len({id(kw["retry"]) for kw in kwargs_list}) == 1
+
+    def test_retry_with_deadline_for_old_api_core(self, monkeypatch, client, logger):
+        monkeypatch.setitem(sys.modules, "google.cloud.storage.retry", _fake_retry_module(with_timeout=False))
+        for kw in self._exercise(client, logger):
+            assert kw["timeout"] == GCS_TIMEOUT_SEC
+            assert kw["retry"].name == "with_deadline" and kw["retry"].deadline == GCS_RETRY_DEADLINE_SEC
+
+    def test_retry_import_failure_passes_timeout_only(self, monkeypatch, client, logger):
+        monkeypatch.setitem(sys.modules, "google.cloud.storage.retry", None)  # import が ImportError になる
+        for kw in self._exercise(client, logger):
+            assert kw == {"timeout": GCS_TIMEOUT_SEC}
+
+    def test_retry_build_failure_passes_timeout_only(self, monkeypatch, client, logger):
+        monkeypatch.setitem(sys.modules, "google.cloud.storage.retry",
+                            _fake_retry_module(with_timeout=False, with_deadline=False))
+        for kw in self._exercise(client, logger):
+            assert kw == {"timeout": GCS_TIMEOUT_SEC}
+
+
+# ---------------------------------------------------------------------------
+# 連続障害での遮断
+# ---------------------------------------------------------------------------
+class TestCircuitBreaker:
+    def _cache(self, client, logger):
+        return EgpfCache(BUCKET, client=client, logger=logger, clock=lambda: NOW)
+
+    def _disabled_warnings(self, caplog):
+        return [r for r in _warnings(caplog) if "EGPF cache disabled" in r.getMessage()]
+
+    def test_three_consecutive_failures_disable_gcs(self, logger, caplog):
+        caplog.set_level(logging.INFO, logger=LOGGER_NAME)
+        client = FakeClient(fail={"download": RuntimeError("timeout"), "upload": RuntimeError("timeout"),
+                                  "list": RuntimeError("timeout")})
+        c = self._cache(client, logger)
+        assert c.disabled is False
+        assert c.load(SPID, HOUSE, DAY, STS, ETS) is None
+        assert c.save(SPID, HOUSE, DAY, STS, ETS, _response(3)) is False
+        assert c.disabled is False
+        assert c.list_cached_days(SPID, HOUSE) is None
+        assert c.disabled is True
+        assert len(client.calls) == 3
+        disabled = self._disabled_warnings(caplog)
+        assert len(disabled) == 1
+        assert "3 consecutive GCS failures" in disabled[0].getMessage() and BUCKET in disabled[0].getMessage()
+
+        # 以後は GCS を一切呼ばない
+        before_blob, before_bucket = client.blob_calls, len(client.bucket_calls)
+        warnings_before = len(_warnings(caplog))
+        client.fail.clear()  # GCS が復旧しても、このインスタンスでは使わない
+        assert c.load(SPID, HOUSE, DAY, STS, ETS) is None
+        assert c.load_envelope(SPID, HOUSE, DAY, STS, ETS) is None
+        assert c.save(SPID, HOUSE, DAY, STS, ETS, _response(3)) is False
+        assert c.list_cached_days(SPID, HOUSE) is None
+        c.compare_and_log(SPID, HOUSE, DAY, STS, ETS, _response(3))
+        assert len(client.calls) == 3
+        assert client.blob_calls == before_blob and len(client.bucket_calls) == before_bucket
+        assert client.objects == {}
+        assert len(_warnings(caplog)) == warnings_before  # 遮断の WARNING は 1回だけ
+        assert any("cache_filled=missing" in m for m in _infos(caplog))
+
+    def test_success_resets_counter(self, logger, caplog):
+        caplog.set_level(logging.WARNING, logger=LOGGER_NAME)
+        client = FakeClient(fail={"download": RuntimeError("timeout")})
+        c = self._cache(client, logger)
+        assert c.load(SPID, HOUSE, DAY, STS, ETS) is None
+        assert c.load(SPID, HOUSE, DAY, STS, ETS) is None
+        assert c.save(SPID, HOUSE, DAY, STS, ETS, _response(3)) is True  # 成功でリセット
+        assert c.load(SPID, HOUSE, DAY, STS, ETS) is None
+        assert c.load(SPID, HOUSE, DAY, STS, ETS) is None
+        assert c.disabled is False
+        assert self._disabled_warnings(caplog) == []
+        assert c.load(SPID, HOUSE, DAY, STS, ETS) is None  # リセット後 3回目で遮断
+        assert c.disabled is True
+
+    def test_not_found_is_not_failure_and_resets(self, logger, caplog):
+        caplog.set_level(logging.WARNING, logger=LOGGER_NAME)
+        client = FakeClient()
+        c = self._cache(client, logger)
+        for _ in range(GCS_MAX_CONSECUTIVE_FAILURES + 2):
+            assert c.load(SPID, HOUSE, DAY, STS, ETS) is None  # NotFound（キャッシュ無し）
+        assert c.disabled is False
+        client.fail["list"] = RuntimeError("timeout")
+        assert c.list_cached_days(SPID, HOUSE) is None
+        assert c.list_cached_days(SPID, HOUSE) is None
+        del client.fail["list"]
+        assert c.load(SPID, HOUSE, DAY, STS, ETS) is None  # NotFound でリセット
+        client.fail["list"] = RuntimeError("timeout")
+        assert c.list_cached_days(SPID, HOUSE) is None
+        assert c.list_cached_days(SPID, HOUSE) is None
+        assert c.disabled is False
+        assert self._disabled_warnings(caplog) == []
+
+    def test_broken_object_is_not_gcs_failure(self, logger, client):
+        c = self._cache(client, logger)
+        client.put_raw(object_key(SPID, HOUSE, DAY), b"broken")
+        for _ in range(GCS_MAX_CONSECUTIVE_FAILURES + 1):
+            assert c.load(SPID, HOUSE, DAY, STS, ETS) is None
+        assert c.disabled is False
+
+    def test_skipped_saves_do_not_touch_counter(self, logger, caplog):
+        # 未確定日・不正レスポンス・read-only は GCS を呼ばないので、障害にも成功にも数えない
+        client = FakeClient(fail={"download": RuntimeError("timeout")})
+        c = self._cache(client, logger)
+        c.load(SPID, HOUSE, DAY, STS, ETS)
+        c.load(SPID, HOUSE, DAY, STS, ETS)
+        assert c.save(SPID, HOUSE, DAY, STS, ETS, _response(0)) is False
+        nxt = DAY + timedelta(days=2)
+        assert c.save(SPID, HOUSE, nxt, *day_bounds(nxt), _response(3)) is False
+        c.load(SPID, HOUSE, DAY, STS, ETS)
+        assert c.disabled is True
 
 
 # ---------------------------------------------------------------------------
