@@ -150,6 +150,10 @@ task_id: 433　実行: 2026-08-02 00:00〜00:47
 | `LOG_LEVEL` | INFO（main.py・deploy.sh とも） | 標準出力／標準エラー出力（Cloud Logging）のログレベル。`predictor.log`（GCS 退避ログ）には LOG_LEVEL に関わらず INFO 以上を常に記録するため、再送の試行ログは GCS 側で必ず確認できる（`DEBUG` 指定時は DEBUG も記録） |
 | `EGPF_CACHE_BUCKET` | （未設定） | EGPF 1分値キャッシュのバケット名。未設定ならキャッシュを使わない（下記「EGPF 1分値キャッシュ」） |
 | `EGPF_CACHE_ENABLED` | OFF | 予測実行時にキャッシュを使うか。`1`/`true`/`yes`/`on`（大文字小文字・前後空白は無視）で ON |
+| `EGPF_PREFETCH_INTERVAL_SEC` | 1 | 事前取得ジョブのリクエスト間の待ち（秒） |
+| `EGPF_PREFETCH_CATCHUP_DAYS` | 7 | 事前取得ジョブの取りこぼし補填の対象日数（前日を含む） |
+| `EGPF_PREFETCH_MAX_REQUESTS` | 4000 | 事前取得ジョブの 1 回の実行の最大リクエスト数 |
+| `EGPF_PREFETCH_BASE_DATE` | （未設定） | 試験用。`YYYY-MM-DD` を設定すると事前取得ジョブが「今日」をその日付とみなす（STG 結合試験用。本番では設定しない） |
 
 `bin/deploy.sh` は `.env.stg` / `.env.prd` から上記を読み、`gcloud run jobs deploy --set-env-vars` に載せます（`EGPF_*` は設定されている変数だけ）。`--set-env-vars` はカンマ区切りのため、**値にカンマを含めないでください**。Webhook URL はシークレットとして扱い、コミットしないでください。
 
@@ -165,6 +169,32 @@ task_id: 433　実行: 2026-08-02 00:00〜00:47
 
 - 比較ログ: `EGPF cache compare: spid=... house=... date=YYYY-MM-DD cache_filled=<分数|missing> egpf_filled=<分数> diff=<egpf-cache|->`（`predictor.log` にも残る）
 - GCS の読み書きに失敗した・キャッシュが不正な場合は EGPF から直接取得します（ハウスは失敗にしない）。連続失敗による打ち切りは、実際に EGPF を呼んだリクエストだけで数えます
+
+### EGPF 1分値の事前取得ジョブ（prefetch.py）
+
+`prefetch.py` は、予測ジョブと同じイメージで動く別の Cloud Run Job（`<ENV>-mci-egpf-prefetch`、`--command python --args prefetch.py`）です。毎日 05:00（JST、Cloud Scheduler）に前日分の EGPF 1分値を取得してキャッシュに保存します（設計書 3.3）。予測は行いません。
+
+- `EGPF_CACHE_BUCKET` が必須（未設定ならエラーログを出して終了コード 1）。`EGPF_CACHE_ENABLED` には依存しません（OFF 期間の比較のため事前取得は動かす）
+- 取得対象日: JST の前日から遡って `EGPF_PREFETCH_CATCHUP_DAYS` 日（前日を含む）のうち、日付が 1〜28 日のもの（月次タスクの期間が前月 1〜28 日のため）
+- 対象ハウス: 月次タスク（batch-resources `System_2001.php`）と同じ条件（Ver3・Ver4 両方）
+  1. `companies.api_id` 非 NULL・`menu_mcialert = 1`、`monitors` に monitorid 2001/2003 で `alertmask = 1` の行がある事業者
+  2. `active_sensors.houseids`（カンマ区切り）に含まれるハウス
+  3. `housesmask_settings` に同じ spid・houseid・事業者で ON の monitorid・`alertmask = 1` の行がある
+  4. `equipment_cognitive_functions` の `algorithm` に 3 または 4 を含む
+- ハウスごとにキャッシュの一覧を取り、保存済みの日は取り直しません（無い日だけ古い順に取得＝前日分と取りこぼしの補填）。一覧取得に失敗したハウスはスキップします
+- 負荷制御: ハウス・日とも直列。リクエスト間に `EGPF_PREFETCH_INTERVAL_SEC` 秒待ち、`EGPF_PREFETCH_MAX_REQUESTS` 回に達したら残りは翌日以降の実行に回します（残数をログに出す）
+- リトライ・打ち切りは予測ジョブと同じ `EGPF_RETRY_*` / `EGPF_ABORT_AFTER_CONSECUTIVE_FAILURES`。4xx・不正なレスポンス（保存しない）・GCS 障害はログに残して次へ進みます
+- 失敗はログのみ（Slack 通知はしない）。終了時に集計ログ `Prefetch summary: houses=... days=... skipped_cached=... requests=... saved=... failed=... list_failed_houses=... carried_over=... unchecked_houses=... aborted=... elapsed=...` を出します
+- 終了コード: 正常・部分失敗は 0。連続失敗による打ち切り・`EGPF_CACHE_BUCKET` 未設定・DB 接続失敗は 1（自動リトライ 0 回。翌日の実行で補う）
+- DB 接続は予測ジョブと同じ `MCI_MYSQL_*`。上記 5 テーブルの SELECT 権限が必要です
+
+ローカルで実行する場合（DB・GCS・EGPF に実際にアクセスします）:
+
+```bash
+EGPF_CACHE_BUCKET=stg-mci-egpf-cache python prefetch.py
+```
+
+デプロイ・Scheduler の作成は `bin/README.md` の「事前取得ジョブ（EG_DASHBOARD-102）」を参照してください。
 
 ### 単体テストの実行
 

@@ -240,6 +240,84 @@ gcloud scheduler jobs create http prd-mci-ver4-scheduler \
   --oauth-service-account-email $PROJECT_NUMBER-compute@developer.gserviceaccount.com
 ```
 
+## 事前取得ジョブ（EG_DASHBOARD-102）
+
+EGPF 1分値を毎日 05:00（JST）に事前取得してキャッシュする `prefetch.py` のジョブです（`<ENV>-mci-egpf-prefetch`）。予測ジョブと同じイメージ（`gcr.io/$PROJECT_ID/<ENV>-mci-ver4`）を使います。仕様は `README.md` の「EGPF 1分値の事前取得ジョブ」と設計書 3.3 を参照してください。
+
+### デプロイ対象の指定（`DEPLOY_TARGET`）
+
+| `DEPLOY_TARGET` | 動作 |
+|---|---|
+| `main`（既定） | 従来どおり。イメージをビルドして予測ジョブ `<ENV>-mci-ver4` をデプロイ |
+| `prefetch` | 事前取得ジョブ `<ENV>-mci-egpf-prefetch` のみデプロイ。**ビルドしない**（既存イメージを使う。先に `main` か `all` でビルドしておく） |
+| `all` | イメージをビルドして両方のジョブをデプロイ |
+
+```bash
+ENV=stg bin/deploy.sh                          # 予測ジョブ（従来どおり）
+ENV=stg DEPLOY_TARGET=prefetch bin/deploy.sh   # 事前取得ジョブのみ（既存イメージ）
+ENV=stg DEPLOY_TARGET=all bin/deploy.sh        # ビルドして両方
+```
+
+事前取得ジョブは次の設定でデプロイされます: `--command python --args prefetch.py`、`--max-retries 0`、`--parallelism 1`、`--task-timeout $PREFETCH_TASK_TIMEOUT`（既定 `14400s`）。
+
+### 事前取得ジョブ用の設定（`.env.stg` / `.env.prd`）
+
+| 変数 | 必須 | 内容 |
+|---|---|---|
+| `EGPF_CACHE_BUCKET` | ○ | キャッシュ用バケット名（例: `stg-mci-egpf-cache`）。未設定だと deploy.sh がエラーで止まる |
+| `JOB_SERVICE_ACCOUNT` | 推奨 | `--service-account`。既存の予測ジョブと同じ SA を指定する |
+| `VPC_NETWORK` / `VPC_SUBNET` / `VPC_EGRESS` | 推奨 | `--network` / `--subnet` / `--vpc-egress`。既存の予測ジョブと同じ Direct VPC egress を指定する（例: `default` / `default` / `private-ranges-only`） |
+| `PREFETCH_TASK_TIMEOUT` | | タスクのタイムアウト（既定 `14400s`） |
+| `EGPF_PREFETCH_INTERVAL_SEC` / `EGPF_PREFETCH_CATCHUP_DAYS` / `EGPF_PREFETCH_MAX_REQUESTS` | | 設定したものだけジョブに載る（未設定ならコードの既定 1 / 7 / 4000） |
+| `EGPF_PREFETCH_BASE_DATE` | | 試験用の基準日（`YYYY-MM-DD`）。設定したときだけジョブに載る。本番では設定しない |
+
+- `JOB_SERVICE_ACCOUNT`・`VPC_*` は事前取得ジョブにだけ付けます（予測ジョブのコマンドは従来どおり）。未設定の項目は警告を出して付けずにデプロイします
+- ジョブの環境変数は、DB・API パスワード（予測ジョブと同じ）、`LOG_LEVEL`、`EGPF_CACHE_BUCKET`、設定されていれば `ENERGY_GATEWAY_API_URL`・`MOCK_API_URL`・`EGPF_RETRY_*`・`EGPF_ABORT_AFTER_CONSECUTIVE_FAILURES`・`EGPF_PREFETCH_*` です（`EGPF_CACHE_ENABLED` は予測時のフラグなので載せません）
+
+試験で基準日だけ変えて手動実行する場合（デプロイし直さずに上書き）:
+
+```bash
+gcloud run jobs execute stg-mci-egpf-prefetch --region asia-northeast1 --update-env-vars EGPF_PREFETCH_BASE_DATE=2026-10-05
+```
+
+### 定期実行（Cloud Scheduler、毎日 05:00 JST）
+
+deploy.sh では作りません。既存の MCI 用 Scheduler は UTC のため、`--time-zone Asia/Tokyo` を必ず指定してください。
+
+**ステージング環境**:
+```bash
+export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
+
+gcloud scheduler jobs create http stg-mci-egpf-prefetch-scheduler \
+  --location asia-northeast1 \
+  --schedule "0 5 * * *" \
+  --time-zone "Asia/Tokyo" \
+  --uri "https://asia-northeast1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT_ID/jobs/stg-mci-egpf-prefetch:run" \
+  --http-method POST \
+  --oauth-service-account-email $PROJECT_NUMBER-compute@developer.gserviceaccount.com
+```
+
+**本番環境**:
+```bash
+export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
+
+gcloud scheduler jobs create http prd-mci-egpf-prefetch-scheduler \
+  --location asia-northeast1 \
+  --schedule "0 5 * * *" \
+  --time-zone "Asia/Tokyo" \
+  --uri "https://asia-northeast1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT_ID/jobs/prd-mci-egpf-prefetch:run" \
+  --http-method POST \
+  --oauth-service-account-email $PROJECT_NUMBER-compute@developer.gserviceaccount.com
+```
+
+確認: `gcloud scheduler jobs describe stg-mci-egpf-prefetch-scheduler --location asia-northeast1 --format="value(schedule,timeZone,state)"` → `0 5 * * *  Asia/Tokyo  ENABLED`
+
+### ログの確認
+
+```bash
+gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=stg-mci-egpf-prefetch AND textPayload:\"Prefetch summary\"" --limit 10
+```
+
 ## ジョブの監視
 
 ### ジョブの実行状況を確認
