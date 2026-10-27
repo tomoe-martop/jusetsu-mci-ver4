@@ -249,7 +249,7 @@ EGPF 1分値を毎日 05:00（JST）に事前取得してキャッシュする `
 | `DEPLOY_TARGET` | 動作 |
 |---|---|
 | `main`（既定） | 従来どおり。イメージをビルドして予測ジョブ `<ENV>-mci-ver4` をデプロイ |
-| `prefetch` | 事前取得ジョブ `<ENV>-mci-egpf-prefetch` のみデプロイ。**ビルドしない**（既存イメージを使う。先に `main` か `all` でビルドしておく） |
+| `prefetch` | 事前取得ジョブ `<ENV>-mci-egpf-prefetch` のみデプロイ。**ビルドしない**（既存イメージに `prefetch.py` が入っている前提。deploy.sh も警告を出す） |
 | `all` | イメージをビルドして両方のジョブをデプロイ |
 
 ```bash
@@ -258,27 +258,32 @@ ENV=stg DEPLOY_TARGET=prefetch bin/deploy.sh   # 事前取得ジョブのみ（�
 ENV=stg DEPLOY_TARGET=all bin/deploy.sh        # ビルドして両方
 ```
 
+- **初回・コード更新時は `DEPLOY_TARGET=all`**（または先に `main` でビルドしてから `prefetch`）。`prefetch` 単独は、既存イメージ（`:latest`）に `prefetch.py` が入っていないと毎回 `can't open file` で失敗します
+- 予測ジョブと同じイメージ・タグを共用するため、**両ジョブのコードの版は連動します**。別ブランチ（release 系など）から `main` でビルドすると、事前取得ジョブも次の実行からそのコードで動きます。`prefetch` 単独のデプロイはジョブ設定（環境変数・VPC 等）だけを変えたいときに使います
+
 事前取得ジョブは次の設定でデプロイされます: `--command python --args prefetch.py`、`--max-retries 0`、`--parallelism 1`、`--task-timeout $PREFETCH_TASK_TIMEOUT`（既定 `14400s`）。
 
 ### 事前取得ジョブ用の設定（`.env.stg` / `.env.prd`）
 
 | 変数 | 必須 | 内容 |
 |---|---|---|
-| `EGPF_CACHE_BUCKET` | ○ | キャッシュ用バケット名（例: `stg-mci-egpf-cache`）。未設定だと deploy.sh がエラーで止まる |
-| `JOB_SERVICE_ACCOUNT` | 推奨 | `--service-account`。既存の予測ジョブと同じ SA を指定する |
-| `VPC_NETWORK` / `VPC_SUBNET` / `VPC_EGRESS` | 推奨 | `--network` / `--subnet` / `--vpc-egress`。既存の予測ジョブと同じ Direct VPC egress を指定する（例: `default` / `default` / `private-ranges-only`） |
+| `EGPF_CACHE_BUCKET` | ○ | キャッシュ用バケット名（例: `stg-mci-egpf-cache`）。未設定だと deploy.sh がエラーで止まる。`<ENV>-` で始まらない名前もエラー（予測ジョブのデプロイでも同じ判定。STG・本番は同じ GCP プロジェクトのため、シェルに残った別環境の値での取り違えを防ぐ） |
+| `JOB_SERVICE_ACCOUNT` | 推奨 | `--service-account`。既存の予測ジョブと同じ SA を指定する。未設定なら警告のみ（既定の compute SA になり、既存ジョブと同じ） |
+| `VPC_NETWORK` / `VPC_SUBNET` / `VPC_EGRESS` | ○ | `--network` / `--subnet` / `--vpc-egress`。既存の予測ジョブと同じ Direct VPC egress を指定する（例: `default` / `default` / `private-ranges-only`）。1 つでも未設定だと deploy.sh がビルド前にエラーで止まる（VPC なしだと DB に内部 IP で接続できない） |
 | `PREFETCH_TASK_TIMEOUT` | | タスクのタイムアウト（既定 `14400s`） |
-| `EGPF_PREFETCH_INTERVAL_SEC` / `EGPF_PREFETCH_CATCHUP_DAYS` / `EGPF_PREFETCH_MAX_REQUESTS` | | 設定したものだけジョブに載る（未設定ならコードの既定 1 / 7 / 4000） |
-| `EGPF_PREFETCH_BASE_DATE` | | 試験用の基準日（`YYYY-MM-DD`）。設定したときだけジョブに載る。本番では設定しない |
+| `EGPF_PREFETCH_INTERVAL_SEC` / `EGPF_PREFETCH_CATCHUP_DAYS` / `EGPF_PREFETCH_MAX_REQUESTS` / `EGPF_PREFETCH_MAX_MINUTES` | | 設定したものだけジョブに載る（未設定ならコードの既定 1 / 7 / 4000 / 100） |
+| `EGPF_PREFETCH_BASE_DATE` | ×（設定しない） | 試験用の基準日。**ジョブ定義には載せない**。`ENV=prd` で設定されているとエラーで止まり、それ以外は警告を出して載せずにデプロイする。試験時は下記の `execute --update-env-vars` で実行ごとに指定する |
 
-- `JOB_SERVICE_ACCOUNT`・`VPC_*` は事前取得ジョブにだけ付けます（予測ジョブのコマンドは従来どおり）。未設定の項目は警告を出して付けずにデプロイします
+- `JOB_SERVICE_ACCOUNT`・`VPC_*` は事前取得ジョブにだけ付けます（予測ジョブのコマンドは従来どおり）
 - ジョブの環境変数は、DB・API パスワード（予測ジョブと同じ）、`LOG_LEVEL`、`EGPF_CACHE_BUCKET`、設定されていれば `ENERGY_GATEWAY_API_URL`・`MOCK_API_URL`・`EGPF_RETRY_*`・`EGPF_ABORT_AFTER_CONSECUTIVE_FAILURES`・`EGPF_PREFETCH_*` です（`EGPF_CACHE_ENABLED` は予測時のフラグなので載せません）
 
-試験で基準日だけ変えて手動実行する場合（デプロイし直さずに上書き）:
+試験で基準日だけ変えて手動実行する場合（その実行だけ上書き。ジョブ定義は変わらないので、翌朝の定期実行は実際の日付で動く）:
 
 ```bash
 gcloud run jobs execute stg-mci-egpf-prefetch --region asia-northeast1 --update-env-vars EGPF_PREFETCH_BASE_DATE=2026-10-05
 ```
+
+`.env.stg` に `EGPF_PREFETCH_BASE_DATE` を書いたり、シェルで export したまま deploy.sh を実行しないでください（ジョブ定義に載ると毎日同じ日を見て「保存済み」でスキップし続け、新しい日を取得しないまま正常終了します。deploy.sh は載せませんが、警告が出たら `unset` してください）。
 
 ### 定期実行（Cloud Scheduler、毎日 05:00 JST）
 
