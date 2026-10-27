@@ -30,6 +30,8 @@ from egpf_common import (
     classify_failure, describe_failure, format_task_summary,
     TITLE_TASK_FAILED, TITLE_TASK_ABORTED, TITLE_UNEXPECTED, ACTION_RECREATE_TASK,
 )
+# EGPF 1分値の GCS 共有キャッシュ（EG_DASHBOARD-102。EGPF_CACHE_BUCKET 未設定なら使わない）
+import egpf_cache
 
 # 通知の先頭に付ける機能名（例: [MCI Ver4][本番] 月次予測 失敗あり）
 NOTIFY_SOURCE = "MCI Ver4"
@@ -309,6 +311,12 @@ def main():
 
         cursor = cnx.cursor()
 
+        # EGPF キャッシュ（設計書 3.4）。バケット未設定なら None で現行どおり。
+        # ON: キャッシュにある日は EGPF を呼ばず、無い日は取得して保存する
+        # OFF + バケットあり: 従来どおり EGPF から取得し、キャッシュとの比較ログのみ出す（設計書 5.1）
+        response_cache = egpf_cache.create_cache(writable=True, logger=logger)
+        cache_enabled = response_cache is not None and egpf_cache.is_cache_enabled()
+
         sql = "SELECT id AS task_id, date_from, date_to from `tasks` " \
               "WHERE start_at IS NULL AND starting_at < NOW() AND algorithm = %s " \
               "ORDER BY starting_at "
@@ -380,36 +388,52 @@ def main():
                             ets = start + timedelta(days=(day + 1))
                             # print(sts, ets)
 
-                            headers = {'Authorization': f"imSP {spid}:{os.environ.get('API_SHARED_PASSWORD')}"}
-                            params = {'service_provider': spid, 'house': houseid, 'sts': int(sts.timestamp()),
-                                      'ets': int(ets.timestamp()), 'time_units': 20}
+                            sts_ts = int(sts.timestamp())
+                            ets_ts = int(ets.timestamp())
+                            cache_day = sts.date()  # sts は JST なので JST の対象日
 
-                            # spid=9991かつMOCK_API_URLが定義されている場合はモックサーバーを使用
-                            if str(spid) == '9991' and mock_api_url:
-                                url = mock_api_url
-                                # mock-api-stgがIAM(run.invoker)保護されている場合のID tokenをX-Serverless-Authorizationで付与
-                                # (Authorizationは既にEGCloud独自認証で使用済みのため別ヘッダ)
-                                try:
-                                    parsed = urlparse(mock_api_url)
-                                    audience = f"{parsed.scheme}://{parsed.netloc}"
-                                    id_tok = google.oauth2.id_token.fetch_id_token(
-                                        google.auth.transport.requests.Request(), audience
-                                    )
-                                    headers['X-Serverless-Authorization'] = f'Bearer {id_tok}'
-                                except Exception as e:
-                                    logger.warning(f"mock-api-stg向けID token取得失敗(認証なしで継続): {e}")
-                            else:
-                                url = api_url
+                            # キャッシュヒット時は EGPF・ID token 取得・guard への記録を行わない
+                            response_data = None
+                            if cache_enabled:
+                                response_data = response_cache.load(spid, houseid, cache_day, sts_ts, ets_ts)
 
-                            # リトライ付き GET（設計書 3 章）。2xx 以外は egpf_get が例外を送出する
-                            res = egpf_get(url, headers, params,
-                                           context={'spid': spid, 'house': houseid,
-                                                    'sts': params['sts'], 'ets': params['ets']},
-                                           logger=logger)
-                            guard.record_success()
-                            # print(r.json()['data'][0]['timestamps'])
+                            if response_data is None:
+                                headers = {'Authorization': f"imSP {spid}:{os.environ.get('API_SHARED_PASSWORD')}"}
+                                params = {'service_provider': spid, 'house': houseid, 'sts': int(sts.timestamp()),
+                                          'ets': int(ets.timestamp()), 'time_units': 20}
 
-                            response_data = res.json()
+                                # spid=9991かつMOCK_API_URLが定義されている場合はモックサーバーを使用
+                                if str(spid) == '9991' and mock_api_url:
+                                    url = mock_api_url
+                                    # mock-api-stgがIAM(run.invoker)保護されている場合のID tokenをX-Serverless-Authorizationで付与
+                                    # (Authorizationは既にEGCloud独自認証で使用済みのため別ヘッダ)
+                                    try:
+                                        parsed = urlparse(mock_api_url)
+                                        audience = f"{parsed.scheme}://{parsed.netloc}"
+                                        id_tok = google.oauth2.id_token.fetch_id_token(
+                                            google.auth.transport.requests.Request(), audience
+                                        )
+                                        headers['X-Serverless-Authorization'] = f'Bearer {id_tok}'
+                                    except Exception as e:
+                                        logger.warning(f"mock-api-stg向けID token取得失敗(認証なしで継続): {e}")
+                                else:
+                                    url = api_url
+
+                                # リトライ付き GET（設計書 3 章）。2xx 以外は egpf_get が例外を送出する
+                                res = egpf_get(url, headers, params,
+                                               context={'spid': spid, 'house': houseid,
+                                                        'sts': params['sts'], 'ets': params['ets']},
+                                               logger=logger)
+                                guard.record_success()
+                                # print(r.json()['data'][0]['timestamps'])
+
+                                response_data = res.json()
+                                if cache_enabled:
+                                    response_cache.save(spid, houseid, cache_day, sts_ts, ets_ts, response_data)
+                                elif response_cache is not None:
+                                    response_cache.compare_and_log(spid, houseid, cache_day, sts_ts, ets_ts,
+                                                                   response_data)
+
                             timestamps = response_data['data'][0]['timestamps']
                             appliance_types = response_data['data'][0]['appliance_types']
 
