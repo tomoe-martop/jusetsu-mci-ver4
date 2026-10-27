@@ -148,8 +148,23 @@ task_id: 433　実行: 2026-08-02 00:00〜00:47
 | `ERROR_NOTIFY_SLACK_WEBHOOK_URL` | （未設定） | Slack Incoming Webhook URL。未設定なら通知しない |
 | `ERROR_NOTIFY_ENV_LABEL` | deploy.sh が `本番`（`ENV=prd`）／`STG` を設定 | 通知の先頭に付く環境ラベル |
 | `LOG_LEVEL` | INFO（main.py・deploy.sh とも） | 標準出力／標準エラー出力（Cloud Logging）のログレベル。`predictor.log`（GCS 退避ログ）には LOG_LEVEL に関わらず INFO 以上を常に記録するため、再送の試行ログは GCS 側で必ず確認できる（`DEBUG` 指定時は DEBUG も記録） |
+| `EGPF_CACHE_BUCKET` | （未設定） | EGPF 1分値キャッシュのバケット名。未設定ならキャッシュを使わない（下記「EGPF 1分値キャッシュ」） |
+| `EGPF_CACHE_ENABLED` | OFF | 予測実行時にキャッシュを使うか。`1`/`true`/`yes`/`on`（大文字小文字・前後空白は無視）で ON |
 
 `bin/deploy.sh` は `.env.stg` / `.env.prd` から上記を読み、`gcloud run jobs deploy --set-env-vars` に載せます（`EGPF_*` は設定されている変数だけ）。`--set-env-vars` はカンマ区切りのため、**値にカンマを含めないでください**。Webhook URL はシークレットとして扱い、コミットしないでください。
+
+### EGPF 1分値キャッシュ（EG_DASHBOARD-102）
+
+予測実行時の日次の EGPF 取得（`main.py` の日次ループ）で、GCS の共有キャッシュ（`api/egpf_cache.py`。`gs://<EGPF_CACHE_BUCKET>/estimated_data/v1/{spid}/{houseid}/{YYYYMMDD}.json.gz`）を使います。仕様の正は `docs/EG_DASHBOARD-102 【高負荷対応】MCI用の事前データ取得/設計書_EGPF1分値の事前取得・キャッシュ設計.md`（ワークスペース直下の `docs/`）。
+
+| `EGPF_CACHE_BUCKET` | `EGPF_CACHE_ENABLED` | 動作 |
+|---|---|---|
+| 未設定 | 何でも | 従来どおり（GCS クライアントも作らない） |
+| 設定 | OFF（既定） | 従来どおり EGPF から取得。キャッシュとの充足分数の比較を日ごとに INFO ログへ出す（書き込みはしない） |
+| 設定 | ON | キャッシュにある日は EGPF を呼ばない。無い日は EGPF から取得してキャッシュに保存 |
+
+- 比較ログ: `EGPF cache compare: spid=... house=... date=YYYY-MM-DD cache_filled=<分数|missing> egpf_filled=<分数> diff=<egpf-cache|->`（`predictor.log` にも残る）
+- GCS の読み書きに失敗した・キャッシュが不正な場合は EGPF から直接取得します（ハウスは失敗にしない）。連続失敗による打ち切りは、実際に EGPF を呼んだリクエストだけで数えます
 
 ### 単体テストの実行
 

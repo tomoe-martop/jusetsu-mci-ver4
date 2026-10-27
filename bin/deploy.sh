@@ -178,6 +178,14 @@ for VAR in EGPF_RETRY_MAX_ATTEMPTS EGPF_RETRY_WAIT_SEC EGPF_CONNECT_TIMEOUT_SEC 
     fi
 done
 
+# EGPF 1分値キャッシュ（EG_DASHBOARD-102。設定されている変数だけ載せる。EGPF_CACHE_BUCKET 未設定ならキャッシュを使わず従来どおり）
+for VAR in EGPF_CACHE_ENABLED EGPF_CACHE_BUCKET; do
+    if [ -n "${!VAR}" ]; then
+        ENV_VARS="$ENV_VARS,$VAR=${!VAR}"
+        echo -e "${GREEN}✓ $VAR=${!VAR}${NC}"
+    fi
+done
+
 # デプロイコマンドの構築
 # タイムアウト: 24時間（デフォルト10分、最大24時間）
 # 計算根拠: 30秒 × 2000件（ハウス） = 60,000秒 = 約16時間40分 + 余裕
