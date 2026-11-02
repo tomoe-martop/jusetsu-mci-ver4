@@ -37,3 +37,6 @@ ENV/
 
 # pytest
 .pytest_cache/
+
+# auto-sprint の作業メモ（spec・レポート）
+.sprints/
